@@ -189,7 +189,7 @@ namespace TinyTodo
         }
         private static Image LoadIcon(string name, int size)
         { using (var source = Image.FromFile(Asset(name))) return FitIcon(source, size); }
-        internal static Bitmap FitIcon(Image source, int size)
+        internal static Bitmap FitIcon(Image source, int size, InterpolationMode interpolation = InterpolationMode.NearestNeighbor, byte minimumAlpha = 1)
         {
             using (var bitmap = new Bitmap(source))
             {
@@ -204,8 +204,9 @@ namespace TinyTodo
                         Marshal.Copy(IntPtr.Add(data.Scan0, y * data.Stride), row, 0, row.Length);
                         for (int x = 0; x < bitmap.Width; x++)
                         {
-                            // Keep every visible source pixel; remove only fully transparent margins.
-                            if (row[x * 4 + 3] == 0) continue;
+                            // By default preserve all nontransparent pixels. A supplied threshold
+                            // can exclude nearly invisible export residue from layout bounds.
+                            if (row[x * 4 + 3] < minimumAlpha) continue;
                             left = Math.Min(left, x); top = Math.Min(top, y); right = Math.Max(right, x); bottom = Math.Max(bottom, y);
                         }
                     }
@@ -220,7 +221,7 @@ namespace TinyTodo
                     content.Width * factor, content.Height * factor);
                 using (var g = Graphics.FromImage(result))
                 {
-                    g.InterpolationMode = InterpolationMode.NearestNeighbor;
+                    g.InterpolationMode = interpolation;
                     g.PixelOffsetMode = PixelOffsetMode.HighQuality;
                     g.DrawImage(bitmap, target, content, GraphicsUnit.Pixel);
                 }

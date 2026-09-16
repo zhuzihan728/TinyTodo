@@ -53,3 +53,20 @@ Windows 10/11，.NET Framework 4.x。
 Windows 行为参考：[SetWindowPos 的不激活选项](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowpos)、[DWM 可见窗口边界](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/ne-dwmapi-dwmwindowattribute)。UI 测试会先点击其自身已验证的测试窗口，取得测试所需的前台权限；生产程序没有模拟输入、全局快捷键或键盘钩子。
 
 最终安装包已隔离验证 3.5.4 → 3.5.5 覆盖升级；默认自启动与桌面快捷方式正常，已登记的 4 个数据文件 SHA256 完全一致，用户原安装登记未改动。
+
+
+## 3.5.6 猫猫开关
+
+主页使用胶囊开关，滑块沿轨道内缘等距移动，约 180 毫秒完成滑动与颜色过渡；快速切换从当前位置折返，隐藏或销毁控件时停止动画。右侧间距为原来的两倍。
+
+- 开启：滑块与新增任务按钮共用 `Theme.AddAction`（`#DEA9B7`），图标使用主页背景色 `#FAFAF9`。
+- 关闭：米灰色滑块与棕色图标；黑名单生效时禁用。
+- 使用用户最终确认的 PNG，原图保存在 `assets/source/cat-toggle-original.png`，运行资源为 `assets/cat-toggle.png`。仅图标排版忽略透明导出噪点，不改写原图。
+
+![猫猫开关：左关右开](screenshots/cat-toggle.png)
+
+`tools/CaptureDocs.cs` 使用独立演示数据生成列表、树视图与开关截图。最终版本通过 93 项业务检查和 379 项 UI 检查（225% 缩放），包含任务编辑、完成反馈、Markdown 悬停、托盘、悬浮设置、黑名单、窗口恢复和输入隔离。悬停测试固定窗口在屏幕内，避免系统级联放置影响鼠标命中。
+
+根目录的草稿图和旧版构建移入本地忽略目录 `archive/pre-3.5.6`，不进入发布包；最终素材、源码、验证脚本与截图保留在仓库。
+
+最终安装包已隔离验证 3.5.5 → 3.5.6 覆盖升级；默认自启动及桌面快捷方式正常，已登记的 4 个任务／配置文件 SHA256 完全一致，原安装登记未改变。便携包的程序、最终图标、字体与许可证均已校验。

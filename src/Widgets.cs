@@ -362,8 +362,59 @@ namespace TinyTodo
 {
     internal sealed class FloatingSwitch : Control
     {
-        internal bool IsFloating; internal Action<bool> Changed; private bool pressed;
-        internal FloatingSwitch() { DoubleBuffered = true; Size = new Size(Ui.U(90), Ui.U(30)); BackColor = Theme.Chrome; TabStop = true; Cursor = Cursors.Hand; }
+        internal Action<bool> Changed;
+        private bool pressed, isFloating;
+        private float progress, transitionFrom;
+        private readonly System.Diagnostics.Stopwatch transitionClock = new System.Diagnostics.Stopwatch();
+        private Timer transitionTimer;
+        private readonly Bitmap catIcon;
+        internal bool IsFloating
+        {
+            get { return isFloating; }
+            set
+            {
+                if (isFloating == value) return;
+                AdvanceTransition(); isFloating = value;
+                if (IsHandleCreated && Visible && Enabled && transitionTimer != null)
+                {
+                    transitionFrom = progress; transitionClock.Restart(); transitionTimer.Start();
+                }
+                else FinishTransition();
+                Invalidate();
+            }
+        }
+        internal FloatingSwitch()
+        {
+            DoubleBuffered = true; Size = new Size(Ui.U(56), Ui.U(30)); BackColor = Theme.Chrome; TabStop = true; Cursor = Cursors.Hand;
+            string iconPath = Theme.Asset("cat-toggle.png");
+            if (System.IO.File.Exists(iconPath))
+                using (var source = Image.FromFile(iconPath)) catIcon = Theme.FitIcon(source, Ui.U(19), InterpolationMode.HighQualityBicubic, 8);
+            transitionTimer = new Timer { Interval = 15 };
+            transitionTimer.Tick += delegate { AdvanceTransition(); Invalidate(); };
+        }
+        private void AdvanceTransition()
+        {
+            if (transitionTimer == null || !transitionTimer.Enabled) return;
+            float elapsed = Math.Min(1F, transitionClock.ElapsedMilliseconds / 180F);
+            float eased = 1F - (float)Math.Pow(1F - elapsed, 3);
+            progress = transitionFrom + ((isFloating ? 1F : 0F) - transitionFrom) * eased;
+            if (elapsed >= 1F) FinishTransition();
+        }
+        private void FinishTransition()
+        {
+            if (transitionTimer != null) transitionTimer.Stop();
+            transitionClock.Reset(); progress = isFloating ? 1F : 0F;
+        }
+        protected override void OnVisibleChanged(EventArgs e)
+        { if (!Visible) FinishTransition(); base.OnVisibleChanged(e); }
+        protected override void OnEnabledChanged(EventArgs e)
+        { if (!Enabled) FinishTransition(); Invalidate(); base.OnEnabledChanged(e); }
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && transitionTimer != null) { transitionTimer.Dispose(); transitionTimer = null; }
+            if (disposing && catIcon != null) catIcon.Dispose();
+            base.Dispose(disposing);
+        }
         internal void Choose(bool value) { if (value != IsFloating && Changed != null) Changed(value); }
         protected override void OnMouseDown(MouseEventArgs e) { pressed = e.Button == MouseButtons.Left; Invalidate(); base.OnMouseDown(e); }
         protected override void OnMouseUp(MouseEventArgs e) { bool choose = pressed && ClientRectangle.Contains(e.Location); pressed = false; Invalidate(); base.OnMouseUp(e); if (choose) Choose(!IsFloating); }
@@ -374,11 +425,42 @@ namespace TinyTodo
         protected override void OnPaint(PaintEventArgs e)
         {
             var g = e.Graphics; g.Clear(Theme.Canvas); g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var path = Theme.Rounded(new RectangleF(1, 1, Width - 3, Height - 3), Height / 2F))
-            using (var b = new SolidBrush(Theme.Chrome)) using (var p = new Pen(pressed ? Theme.Rose : Theme.Border, pressed ? Ui.U(2) : 1)) { g.FillPath(b, path); g.DrawPath(p, path); }
-            using (var font = Theme.Font(9F, FontStyle.Regular, "收起猫猫"))
-                TextRenderer.DrawText(g, IsFloating ? "收起猫猫" : "召唤猫猫", font, ClientRectangle, Enabled ? Theme.Ink : Theme.Muted,
-                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            Color outline = Theme.Mix(Theme.Rose, Theme.Border, progress);
+            Color track = Theme.Mix(Theme.RoseSoft, Theme.Chrome, progress * .22F);
+            Color thumb = Theme.Mix(Theme.AddAction, Theme.HeaderTint, progress);
+            if (!Enabled) { outline = Theme.Border; track = Theme.Chrome; thumb = Theme.Done; }
+            var trackBounds = new RectangleF(Ui.Scale, Ui.Scale, Width - Ui.Scale * 2 - 1, Height - Ui.Scale * 2 - 1);
+            using (var path = Theme.Rounded(trackBounds, Height / 2F))
+            using (var brush = new SolidBrush(track))
+            using (var pen = new Pen(pressed ? Theme.Rose : outline, pressed ? Ui.U(2) : 1F + progress * Ui.Scale * .5F))
+            { g.FillPath(brush, path); g.DrawPath(pen, path); }
+            // Inset the unchanged track uniformly so both capsule ends share their arc centers.
+            float inset = Ui.Scale * 2F, knobWidth = Ui.U(31);
+            float knobHeight = trackBounds.Height - inset * 2F;
+            float left = trackBounds.Left + inset + (trackBounds.Width - knobWidth - inset * 2F) * progress;
+            var knob = new RectangleF(left, trackBounds.Top + inset, knobWidth, knobHeight);
+            using (var path = Theme.Rounded(knob, knob.Height / 2F))
+            using (var brush = new SolidBrush(thumb)) g.FillPath(brush, path);
+            float icon = Ui.U(19);
+            DrawCatIcon(g, new RectangleF(knob.X + (knob.Width - icon) / 2F, knob.Y + (knob.Height - icon) / 2F, icon, icon));
+        }
+        private void DrawCatIcon(Graphics g, RectangleF bounds)
+        {
+            if (catIcon == null) return;
+            // Keep the supplied alpha silhouette; blend its brown into the canvas color when active.
+            using (var attributes = new System.Drawing.Imaging.ImageAttributes())
+            {
+                var matrix = new System.Drawing.Imaging.ColorMatrix();
+                float active = Enabled ? progress : 0F;
+                matrix.Matrix00 = matrix.Matrix11 = matrix.Matrix22 = 1F - active;
+                matrix.Matrix40 = Theme.Canvas.R / 255F * active;
+                matrix.Matrix41 = Theme.Canvas.G / 255F * active;
+                matrix.Matrix42 = Theme.Canvas.B / 255F * active;
+                matrix.Matrix33 = Enabled ? .64F + progress * .36F : .32F;
+                attributes.SetColorMatrix(matrix);
+                var target = new PointF[] { new PointF(bounds.Left, bounds.Top), new PointF(bounds.Right, bounds.Top), new PointF(bounds.Left, bounds.Bottom) };
+                g.DrawImage(catIcon, target, new RectangleF(0, 0, catIcon.Width, catIcon.Height), GraphicsUnit.Pixel, attributes);
+            }
         }
     }
 }

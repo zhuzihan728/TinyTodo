@@ -164,7 +164,7 @@ namespace TinyTodo
                         string[] files = {
                             "src/TaskControls.cs", "src/App.cs", "src/Model.cs", "src/TaskViews.cs", "src/DataLocations.cs", "src/SettingsViews.cs",
                             "src/MarkdownEditor.cs", "src/Widgets.cs", "src/Chrome.cs", "src/Theme.cs", "src/Markdown.cs", "src/Presentation.cs",
-                            "assets/app-icon.png", "assets/floating-icon.png", "assets/floating-icon.gif", "assets/app.ico", "assets/WenYuanRoundedSC-Regular.ttf", "assets/WenYuanRoundedSC-Bold.ttf", "assets/Font-coverage.txt", "assets/Font-source-notice.txt", "assets/Font-license.txt",
+                            "assets/app-icon.png", "assets/floating-icon.png", "assets/floating-icon.gif", "assets/cat-toggle.png", "assets/app.ico", "assets/WenYuanRoundedSC-Regular.ttf", "assets/WenYuanRoundedSC-Bold.ttf", "assets/Font-coverage.txt", "assets/Font-source-notice.txt", "assets/Font-license.txt",
                             "tests/CoreTests.cs", "tests/UiTests.cs", "bin/TinyTodo.exe", "bin/TinyTodo.Tests.exe", "bin/TinyTodo.UiTests.exe", "bin/version.txt",
                             "app.manifest", "build.cmd", "start.cmd", "test.cmd", "ui-test.cmd", "uninstall.cmd",
                             "README.md", "START-HERE.txt", "VALIDATION.txt", "UPGRADE.txt", "DESIGN.md", ".tinytodo-app"

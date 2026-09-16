@@ -15,16 +15,33 @@ internal static class CaptureDocs
         using (var bitmap = new Bitmap(form.Width, form.Height))
         { form.DrawToBitmap(bitmap, form.ClientRectangle); bitmap.Save(Path.Combine("docs/screenshots", name + ".png")); }
     }
+    private static void SaveCatToggle()
+    {
+        using (var canvas = new Bitmap(Ui.U(172), Ui.U(54)))
+        using (var g = Graphics.FromImage(canvas))
+        {
+            g.Clear(Theme.Canvas);
+            for (int i = 0; i < 2; i++)
+                using (var toggle = new FloatingSwitch())
+                {
+                    toggle.IsFloating = i == 1; toggle.CreateControl();
+                    using (var bitmap = new Bitmap(toggle.Width, toggle.Height))
+                    { toggle.DrawToBitmap(bitmap, toggle.ClientRectangle); g.DrawImageUnscaled(bitmap, Ui.U(12 + i * 86), Ui.U(12)); }
+                }
+            canvas.Save("docs/screenshots/cat-toggle.png");
+        }
+    }
     [STAThread] private static void Main()
     {
         Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
+        SaveCatToggle();
         string root = Path.GetFullPath("artifacts/docs-demo"); Directory.CreateDirectory(root);
         var store = new Store(Path.Combine(root, "tasks.json")); store.Load();
         var research = new Todo { Name = "整理想法", Due = "2026-09-18", Important = true, Description = "# 一个小计划\n\n- 记录灵感\n- 整理资料\n- 给每一步留一点时间" };
         var draft = new Todo { Name = "完成初稿", Due = "2026-09-20", Description = "## 今天的小目标\n\n先把想法写下来，再慢慢打磨。\n\n- [x] 整理大纲\n- [ ] 补充内容\n\n**一步一步来。**" }; draft.Prerequisites.Add(research.Id);
         var review = new Todo { Name = "检查与修改", Due = "2026-09-22" }; review.Prerequisites.Add(draft.Id);
         var publish = new Todo { Name = "发布作品", Due = "2026-09-25", Important = true }; publish.Prerequisites.Add(review.Id);
-        store.Change(s => { s.Tasks.Clear(); s.Tasks.AddRange(new[] { research, draft, review, publish }); s.Window.Floating = false; });
+        store.Change(s => { s.Tasks.Clear(); s.Tasks.AddRange(new[] { research, draft, review, publish }); s.Window = new Settings { CatMode = CatVisibilityMode.Always }; });
         using (var main = new MainForm(store, new DataLocations(root)))
         {
             main.Show(); Save(main, "tasks");

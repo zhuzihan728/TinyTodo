@@ -10,7 +10,9 @@
 
 ![任务依赖](docs/screenshots/tree.png)
 
-透明动态悬浮入口，记住窗口位置；三种显示规则，支持程序黑名单。
+猫猫开关与透明动态悬浮入口，记住窗口位置，支持全屏隐藏和程序黑名单。
+
+![猫猫开关](docs/screenshots/cat-toggle.png)
 
 ![悬浮动画](assets/floating-icon.gif)
 

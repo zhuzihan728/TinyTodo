@@ -101,6 +101,7 @@ internal static class UiTests
             using (var table = new TaskTable { Dock = DockStyle.Fill })
             {
                 host.ClientSize = new Size(Ui.U(520), Ui.U(380)); host.Controls.Add(table);
+                host.StartPosition = FormStartPosition.Manual; host.Location = Screen.PrimaryScreen.WorkingArea.Location; Ui.Fit(host);
                 var task = new Todo { Name = "保持悬停", Description = "# Markdown\n\n鼠标停在任务上时保持可见。" };
                 var state = new State(); state.Tasks.Add(task); table.ShowTasks(state, state.Tasks, false);
                 host.Show(); host.Activate(); Application.DoEvents();
@@ -122,6 +123,7 @@ internal static class UiTests
             using (var graph = new TaskGraph { Dock = DockStyle.Fill })
             {
                 host.ClientSize = new Size(Ui.U(520), Ui.U(380)); host.Controls.Add(graph);
+                host.StartPosition = FormStartPosition.Manual; host.Location = Screen.PrimaryScreen.WorkingArea.Location; Ui.Fit(host);
                 var task = new Todo { Name = "树节点悬停", Description = "**预览不会一闪而过。**" };
                 var state = new State(); state.Tasks.Add(task);
                 host.Show(); host.Activate(); graph.ShowTasks(state, true, task.Id, true); Application.DoEvents();
@@ -344,7 +346,8 @@ internal static class UiTests
         using (var main = new MainForm(store, new DataLocations(Path.GetDirectoryName(store.PathName))))
         {
             main.Show(); Application.DoEvents();
-            Descendants(main).OfType<FloatingSwitch>().Single().Choose(true); Application.DoEvents();
+            // Exercise the default fullscreen policy without creating a manual summon override.
+            main.UpdateDesktopVisibility(false); Application.DoEvents();
             var bubble = (FloatingIcon)typeof(MainForm).GetField("bubble", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main);
             main.Hide(); main.ToggleFromBubble(); Application.DoEvents();
             Assert(main.Visible && main.WindowState == FormWindowState.Normal, "bubble restores hidden main window");
