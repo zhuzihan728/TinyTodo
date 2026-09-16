@@ -1,0 +1,12 @@
+/bin/
+/dist/
+/artifacts/
+/archive/
+/tools/InnoSetup/
+/tools/*.exe
+/tools/*.zip
+*.user
+*.suo
+*.log
+Thumbs.db
+Desktop.ini
