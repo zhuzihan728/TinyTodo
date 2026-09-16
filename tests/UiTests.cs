@@ -999,6 +999,139 @@ internal static class UiTests
             }
         }
     }
+    private static void VerifyDesktopAdd(Store store)
+    {
+        using (var main = new MainForm(store, new DataLocations(Path.GetDirectoryName(store.PathName))))
+        {
+            main.Show(); main.Activate(); PumpFor(100);
+            var menu = (ContextMenuStrip)typeof(MainForm).GetField("menu", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main);
+            var views = Descendants(main).OfType<TaskViews>().First();
+            var historyField = typeof(MainForm).GetField("history", BindingFlags.Instance | BindingFlags.NonPublic);
+            int taskCount = store.Current.Tasks.Count;
+            Action openAdd = delegate
+            {
+                Rectangle area = Screen.PrimaryScreen.WorkingArea;
+                menu.Show(new Point(area.Left + 80, area.Top + 80)); PumpFor(80);
+                var item = menu.Items.OfType<ToolStripMenuItem>().Single(i => i.Text == "添加任务");
+                Point target = menu.PointToScreen(new Point(item.Bounds.Left + item.Width / 2, item.Bounds.Top + item.Height / 2));
+                Assert(WindowFromPoint(target) == menu.Handle, "add command test targets the desktop menu");
+                Point saved = Cursor.Position;
+                try { Cursor.Position = target; mouse_event(2, 0, 0, 0, UIntPtr.Zero); mouse_event(4, 0, 0, 0, UIntPtr.Zero); PumpFor(120); }
+                finally { Cursor.Position = saved; }
+            };
+            foreach (bool history in new bool[] { false, true })
+                foreach (int mode in new int[] { 0, 2 })
+                    foreach (bool hidden in new bool[] { true, false })
+                    {
+                        main.Show(); main.Activate();
+                        typeof(MainForm).GetMethod("SwitchHistory", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(main, new object[] { history });
+                        views.SelectView(mode); if (hidden) main.Hide(); PumpFor(80);
+                        Rectangle bounds = main.Bounds;
+                        openAdd();
+                        var editor = TaskWindows.Find<TaskEditor>(store, e => e.TaskId == null);
+                        Assert(editor != null && editor.Visible && editor.Enabled && !editor.Modal && !menu.Visible,
+                            "desktop add opens an independent editor and closes the menu");
+                        Assert(main.Visible == !hidden && main.Bounds == bounds && (bool)historyField.GetValue(main) == history && views.Mode == mode,
+                            "desktop add preserves main visibility, position, history and view: hidden=" + hidden + ", history=" + history + ", mode=" + mode);
+                        Assert(DesktopActivity.GetForegroundWindow() == editor.Handle, "new task editor receives foreground after menu closes");
+                        var name = Descendants(editor).OfType<TextBox>().Single(t => t.MaxLength == 120); name.Text = "Keep desktop draft";
+                        openAdd();
+                        Assert(Object.ReferenceEquals(editor, TaskWindows.Find<TaskEditor>(store, e => e.TaskId == null)) && name.Text == "Keep desktop draft",
+                            "repeated desktop add reuses the unsaved draft");
+                        Assert(main.Visible == !hidden && (bool)historyField.GetValue(main) == history && views.Mode == mode,
+                            "reopening draft still preserves main state");
+                        editor.Close(); PumpFor(80);
+                        Assert(main.Visible == !hidden && (bool)historyField.GetValue(main) == history && views.Mode == mode && store.Current.Tasks.Count == taskCount,
+                            "canceling desktop draft preserves main view and task data");
+                        var tray = (NotifyIcon)typeof(MainForm).GetField("tray", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main);
+                        var reopen = new Action[] {
+                            delegate { main.ToggleFromBubble(); },
+                            delegate { typeof(NotifyIcon).GetMethod("OnMouseClick", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(tray, new object[] { new MouseEventArgs(MouseButtons.Left, 1, 0, 0, 0) }); },
+                            delegate { menu.Items[0].PerformClick(); }
+                        };
+                        foreach (var entry in reopen)
+                        {
+                            float zoom = views.Graph.Zoom; PointF origin = views.Graph.ToScreen(PointF.Empty);
+                            main.Hide(); entry(); PumpFor(80);
+                            Assert(main.Visible && (bool)historyField.GetValue(main) == history && views.Mode == mode && views.Graph.Zoom == zoom && views.Graph.ToScreen(PointF.Empty) == origin,
+                                "cat, tray and expand commands retain history, view and tree viewport");
+                        }
+                    }
+        }
+    }
+    private static void VerifyCatMenuDismissal(Store store)
+    {
+        using (var main = new MainForm(store, new DataLocations(Path.GetDirectoryName(store.PathName))))
+        {
+            main.Show(); main.Activate(); PumpFor(100);
+            var bubble = (FloatingIcon)typeof(MainForm).GetField("bubble", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main);
+            var menu = (ContextMenuStrip)typeof(MainForm).GetField("menu", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main);
+            var tray = (NotifyIcon)typeof(MainForm).GetField("tray", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main);
+            Descendants(main).OfType<FloatingSwitch>().Single().Choose(true); main.Hide();
+            Rectangle area = Screen.PrimaryScreen.WorkingArea;
+            bubble.Location = new Point(area.Left + 80, area.Top + 160);
+            string ready = Path.Combine(Path.GetDirectoryName(store.PathName), "menu-probe-ready.txt");
+            using (var probe = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Application.ExecutablePath,
+                "--input-probe \"" + ready + "\"") { UseShellExecute = false, CreateNoWindow = true }))
+            {
+                IntPtr target = IntPtr.Zero; Point previous = Cursor.Position;
+                try
+                {
+                    WaitUntil(() => File.Exists(ready), "external menu test window started");
+                    target = new IntPtr(Int64.Parse(File.ReadAllText(ready)));
+                    SetWindowPos(target, new IntPtr(-1), area.Right - 360, area.Top + 60, 320, 100, 0x40);
+                    Point outside = new Point(area.Right - 200, area.Top + 100);
+                    Action clickOutside = delegate
+                    {
+                        uint hitProcess; GetWindowThreadProcessId(WindowFromPoint(outside), out hitProcess);
+                        Assert(hitProcess == probe.Id, "outside click targets only the isolated test application");
+                        Cursor.Position = outside; mouse_event(2, 0, 0, 0, UIntPtr.Zero); mouse_event(4, 0, 0, 0, UIntPtr.Zero); PumpFor(150);
+                    };
+                    clickOutside();
+                    foreach (bool fromCat in new bool[] { true, false })
+                    {
+                        for (int attempt = 0; attempt < 3; attempt++)
+                        {
+                            Point catPoint = Point.Empty;
+                            for (int y = 0; y < bubble.Height && catPoint.IsEmpty; y++)
+                                for (int x = 0; x < bubble.Width; x++)
+                                {
+                                    Point candidate = bubble.PointToScreen(new Point(x, y));
+                                    if (WindowFromPoint(candidate) == bubble.Handle) { catPoint = candidate; break; }
+                                }
+                            Assert(!catPoint.IsEmpty, "cat has a visible hit target");
+                            Cursor.Position = catPoint;
+                            if (fromCat) { mouse_event(8, 0, 0, 0, UIntPtr.Zero); mouse_event(16, 0, 0, 0, UIntPtr.Zero); }
+                            else typeof(NotifyIcon).GetMethod("OnMouseUp", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(tray, new object[] { new MouseEventArgs(MouseButtons.Right, 1, 0, 0, 0) });
+                            PumpFor(650);
+                            Assert(menu.Visible && !main.Visible, "desktop menu remains open without opening task window: cat=" + fromCat);
+                            if (attempt == 1)
+                            {
+                                SendKeys.SendWait("{ESC}"); PumpFor(150);
+                                Assert(!menu.Visible && !main.Visible, "Escape dismisses desktop menu without opening task window");
+                                clickOutside();
+                            }
+                            else
+                            {
+                                if (File.Exists(ready + ".click")) File.Delete(ready + ".click");
+                                clickOutside();
+                                Assert(!menu.Visible, "outside click dismisses desktop menu: cat=" + fromCat);
+                                Assert(File.Exists(ready + ".click") && DesktopActivity.GetForegroundWindow() == target,
+                                    "same outside click reaches external application and leaves its focus intact");
+                                Assert(!main.Visible && bubble.Visible, "menu dismissal preserves hidden main and visible cat");
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    menu.Close(); Cursor.Position = previous;
+                    if (target != IntPtr.Zero) Program.PostMessage(target, 0x10, IntPtr.Zero, IntPtr.Zero);
+                    if (!probe.WaitForExit(3000)) probe.Kill();
+                }
+            }
+        }
+    }
     private static void WaitUntil(Func<bool> condition, string message)
     {
         var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -1206,6 +1339,7 @@ internal static class UiTests
             using (var probe = new Form { Text = "TinyTodo isolated input test", ClientSize = new Size(320, 100), FormBorderStyle = FormBorderStyle.None })
             {
                 var edit = new TextBox { Dock = DockStyle.Fill, Multiline = true }; probe.Controls.Add(edit);
+                edit.MouseDown += delegate { File.WriteAllText(args[1] + ".click", "clicked"); };
                 probe.Shown += delegate { edit.Focus(); File.WriteAllText(args[1], probe.Handle.ToInt64().ToString()); };
                 Application.Run(probe); return 0;
             }
@@ -1237,7 +1371,8 @@ internal static class UiTests
             if (Environment.GetEnvironmentVariable("TINYTODO_PAGE_ONLY") == "1") { VerifyPageInteractions(temp); VerifySessionWindowSizes(temp); VerifyPreviewCanvas(temp); return 0; }
             if (Environment.GetEnvironmentVariable("TINYTODO_PROGRAMS_ONLY") == "1") { VerifyProgramPicker(temp); return 0; }
             if (Environment.GetEnvironmentVariable("TINYTODO_INPUT_ONLY") == "1") { VerifyInputIsolation(store); return 0; }
-            if (Environment.GetEnvironmentVariable("TINYTODO_TRAY_ONLY") == "1") { VerifyTrayMenu(store); return 0; }
+            if (Environment.GetEnvironmentVariable("TINYTODO_DESKTOP_ADD_ONLY") == "1") { VerifyDesktopAdd(store); return 0; }
+            if (Environment.GetEnvironmentVariable("TINYTODO_TRAY_ONLY") == "1") { VerifyDesktopAdd(store); VerifyCatMenuDismissal(store); VerifyTrayMenu(store); return 0; }
             if (Environment.GetEnvironmentVariable("TINYTODO_WINDOW_ONLY") == "1") { VerifyWindowRecovery(store); VerifyCatSettings(store); VerifyModeless(temp); return 0; }
             using (var main = new MainForm(store, locations))
             {
@@ -1423,8 +1558,8 @@ internal static class UiTests
                 Descendants(main).OfType<Button>().First(x => x.Text.StartsWith("待办")).PerformClick(); views.SelectView(0); Application.DoEvents(); AssertColumns(grid);
                 Descendants(main).OfType<Button>().First(x => x.Text.StartsWith("历史")).PerformClick(); views.SelectView(2);
                 main.Hide();
-                typeof(MainForm).GetMethod("ShowMain", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(main, new object[] { true });
-                Assert(main.Visible && views.Mode == 0 && !views.ShowDone && grid.Rows.Count == store.Current.Tasks.Count(x => !x.Done), "expand entry resets history tree to active list");
+                typeof(MainForm).GetMethod("ShowMain", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(main, new object[0]);
+                Assert(main.Visible && views.Mode == 2 && views.ShowDone, "expand entry preserves history tree instead of resetting to active list");
             }
             using (var preview = new TaskPreview(store, b.Id))
             {
@@ -1529,7 +1664,7 @@ internal static class UiTests
                 Assert(opened == null, "drag selection does not open a link");
                 Assert(!editor.Preview.ActivateLink(editor.Preview.Text.IndexOf("unsafe")), "non-web schemes cannot launch from Markdown");
             }
-            VerifyHoverPersistence(); VerifyHover(); VerifyStableScrolling(); VerifyRefinement(store); VerifyWindowRecovery(store); VerifyCatSettings(store); VerifyTrayMenu(store); VerifyInputIsolation(store); VerifyCompletionFeedback(temp); VerifyModeless(temp); VerifyPageInteractions(temp); VerifySessionWindowSizes(temp); VerifyPreviewCanvas(temp); VerifyTaskSelection();
+            VerifyHoverPersistence(); VerifyHover(); VerifyStableScrolling(); VerifyRefinement(store); VerifyWindowRecovery(store); VerifyCatSettings(store); VerifyDesktopAdd(store); VerifyCatMenuDismissal(store); VerifyTrayMenu(store); VerifyInputIsolation(store); VerifyCompletionFeedback(temp); VerifyModeless(temp); VerifyPageInteractions(temp); VerifySessionWindowSizes(temp); VerifyPreviewCanvas(temp); VerifyTaskSelection();
             using (var toggle = new FloatingSwitch())
             {
                 bool mode = false; toggle.Changed = value => { mode = value; toggle.IsFloating = value; };

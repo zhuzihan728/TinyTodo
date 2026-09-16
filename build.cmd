@@ -13,6 +13,6 @@ if errorlevel 1 (
   echo Build failed. If TinyTodo is running, exit it from the tray and try again.
   exit /b 1
 )
->bin\version.txt echo 3.5.8
+>bin\version.txt echo 3.5.9
 echo Built: bin\TinyTodo.exe
 exit /b 0

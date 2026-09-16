@@ -258,7 +258,7 @@ namespace TinyTodo
         public MainForm(Store store, DataLocations locations)
         {
             this.store = store; this.locations = locations;
-            Ui.Setup(this, "TinyTodo 3.5.8", 720, 500);
+            Ui.Setup(this, "TinyTodo 3.5.9", 720, 500);
             StartPosition = FormStartPosition.Manual;
             appIcon = MakeIcon(); Icon = appIcon;
             var root = Ui.Root(Ui.Auto(), Ui.Fill(), Ui.Auto());
@@ -302,16 +302,20 @@ namespace TinyTodo
             root.Controls.Add(top, 0, 0); root.Controls.Add(views, 0, 1); root.Controls.Add(bottom, 0, 2); Controls.Add(root);
             menu = new SoftMenu { Renderer = new TaskMenuRenderer(), ShowImageMargin = false, BackColor = Theme.Canvas, ForeColor = Theme.Ink, Font = Theme.Font(9.5F, FontStyle.Regular, "任务列表") };
             menu.Items.Add("展开任务表", null, delegate { ShowMain(); });
-            menu.Items.Add("添加任务", null, delegate { ShowMain(); Add(); });
+            menu.Items.Add("添加任务", null, delegate { BeginInvoke(new Action(Add)); });
             catMenuItem = menu.Items.Add("收起猫猫", null, delegate { ToggleFloating(); });
             menu.Items.Add("设置", null, delegate { BeginInvoke(new Action(OpenSettings)); });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("退出", null, delegate { exiting = true; Close(); });
             menu.Opening += delegate { RefreshCatControls(); desktopMenuOpen = true; };
+            // The cat is deliberately non-activating. Its explicit context menu must
+            // own foreground so Windows dismisses it on outside clicks or Escape.
+            // Share this with the tray without activating the cat or task window.
+            menu.Opened += delegate { if (menu.Visible) SetForegroundWindow(menu.Handle); };
             menu.Closed += delegate { desktopMenuOpen = false; };
             // The tray release must finish before the popup takes foreground ownership.
             trayIcon = MakeTrayIcon();
-            tray = new NotifyIcon { Icon = trayIcon, Text = "TinyTodo 3.5.8", Visible = true };
+            tray = new NotifyIcon { Icon = trayIcon, Text = "TinyTodo 3.5.9", Visible = true };
             tray.MouseUp += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Right) QueueTrayMenu(Cursor.Position); };
             tray.MouseClick += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) ShowMain(); };
             bubble = new FloatingIcon(ToggleFromBubble, SaveIconPosition, menu);
@@ -347,8 +351,6 @@ namespace TinyTodo
                 trayMenuQueued = false;
                 if (IsDisposed || Disposing || menu.IsDisposed) return;
                 menu.Show(point);
-                // Only the explicit right-click activates the menu, never the task window.
-                if (menu.Visible) SetForegroundWindow(menu.Handle);
             }));
         }
         private void SwitchHistory(bool showHistory)
@@ -423,7 +425,7 @@ namespace TinyTodo
             if (Visible && Enabled && WindowState == FormWindowState.Normal && DesktopActivity.GetForegroundWindow() == Handle) Collapse();
             else ShowMain();
         }
-        private void ShowMain(bool resetView = true)
+        private void ShowMain()
         {
             TaskWindows.ForgetAutomaticHide(this);
             Form dialog = ActiveDialog();
@@ -432,7 +434,6 @@ namespace TinyTodo
                 if (dialog.WindowState == FormWindowState.Minimized) dialog.WindowState = FormWindowState.Normal;
                 Ui.Fit(dialog); dialog.Show(); dialog.BringToFront(); dialog.Activate(); return;
             }
-            if (resetView) { SwitchHistory(false); views.SelectView(0); }
             WindowState = FormWindowState.Normal;
             Show(); WindowState = FormWindowState.Normal; Ui.Fit(this); BringToFront(); Activate();
         }
@@ -539,7 +540,7 @@ namespace TinyTodo
             currentButton.Text = "待办 " + s.Tasks.Count(t => !t.Done); historyButton.Text = "历史 " + s.Tasks.Count(t => t.Done);
             ((SoftButton)currentButton).SelectedTab = !history; currentButton.Invalidate();
             ((SoftButton)historyButton).SelectedTab = history; historyButton.Invalidate();
-            Text = history ? "TinyTodo 3.5.8 · 历史" : "TinyTodo 3.5.8";
+            Text = history ? "TinyTodo 3.5.9 · 历史" : "TinyTodo 3.5.9";
         }
         private bool Change(Action<State> action)
         { try { store.Change(action); Render(); return true; } catch (Exception ex) { Error(ex); return false; } }
