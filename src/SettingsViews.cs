@@ -31,7 +31,7 @@ namespace TinyTodo
             var modeLabel = Ui.Label("猫猫默认显示规则"); modeLabel.Dock = DockStyle.None; modeLabel.Anchor = AnchorStyles.Left; Mode.Anchor = AnchorStyles.Left;
             modeLabel.Margin = new Padding(Ui.U(3), 0, Ui.U(14), 0); Mode.Margin = new Padding(0);
             modeRow.Controls.Add(modeLabel, 0, 0); modeRow.Controls.Add(Mode, 1, 0); root.Controls.Add(modeRow, 0, 0);
-            root.Controls.Add(Ui.Label("程序黑名单 · 优先级最高\n这些程序运行时始终隐藏猫猫，取消勾选即可移除。"), 0, 1);
+            root.Controls.Add(Ui.Label("程序黑名单 · 优先级最高\n这些程序运行时始终隐藏猫猫。"), 0, 1);
             foreach (string key in store.Current.Window.CatBlacklist ?? new System.Collections.Generic.List<string>())
             {
                 string name;

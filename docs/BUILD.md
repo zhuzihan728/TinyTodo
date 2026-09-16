@@ -84,7 +84,7 @@ Windows 行为参考：[SetWindowPos 的不激活选项](https://learn.microsoft
 
 构建和测试记录位于本地忽略目录 `artifacts/release-3.5.7/`。业务数据验证为 93 项，UI 回归为 551 项（225% 缩放），包含真实鼠标点击、窗口调整、完整滚动条端点、输入法组合键、独立进程全屏收起与恢复。未直接运行英雄联盟或 WoW，跨屏规则另用不同分辨率及负坐标边界验证。
 
-`tools/TestUpgrade.ps1` 默认验证 3.5.6 → 3.5.7 覆盖安装，使用独立安装登记和快捷方式目录，并核对已有任务文件哈希。`tools/TestInstaller.ps1` 使用独立安装登记检查卸载清理选项、取消及静默卸载，不替换用户真实安装。
+`tools/TestUpgrade.ps1` 在本版发布时验证 3.5.6 → 3.5.7 覆盖安装，使用独立安装登记和快捷方式目录，并核对已有任务文件哈希。`tools/TestInstaller.ps1` 使用独立安装登记检查卸载清理选项、取消及静默卸载，不替换用户真实安装。
 
 程序发现专项：设置 `TINYTODO_PROGRAMS_ONLY=1` 后运行 UI 测试。窗口与安装行为参考：[不激活显示的 ShowWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showwindow)、[应用登记](https://learn.microsoft.com/en-us/windows/win32/shell/app-registration)、[当前用户应用包查询](https://learn.microsoft.com/en-us/powershell/module/appx/get-appxpackage)。
 
@@ -92,3 +92,11 @@ Windows 行为参考：[SetWindowPos 的不激活选项](https://learn.microsoft
 3.5.7 最终发布验证：93 项业务检查、551 项 UI 检查通过；3.5.6 → 3.5.7 隔离覆盖升级通过，自启动和桌面快捷方式默认勾选。4 个已登记数据文件 SHA256 前后一致，用户真实安装登记未改变。独立卸载验证确认清理选项默认勾选、取消不移除文件、静默卸载保留任务及无关文件。便携包 14 个文件与发布目录逐一匹配，EXE／安装器版本均为 3.5.7.0，发布 SHA256 清单核对通过。
 
 旧构建、草稿脚本和本地调试产物归档到忽略目录 `archive/pre-3.5.7/`；`dist/` 保留当前发布包，`artifacts/release-3.5.7/` 保留本次验证记录。
+
+## 3.5.8 黑名单提示
+
+精简设置中的黑名单说明为“这些程序运行时始终隐藏猫猫。”，同步更新演示截图。
+
+本次重新编译和打包通过，隔离验证 3.5.7 → 3.5.8 覆盖升级通过；自启动和桌面快捷方式默认勾选，4 个已登记任务／配置文件 SHA256 前后一致，用户真实安装登记未改变。便携包 14 个文件与发布目录逐一匹配，程序及安装器版本均为 3.5.8.0，SHA256 清单核对通过。本次为文案调整，未重复运行完整业务与 UI 测试；完整回归结果见 3.5.7。
+
+`tools/TestUpgrade.ps1` 默认验证 3.5.7 → 3.5.8。当前验证记录位于本地忽略目录 `artifacts/release-3.5.8/`，旧发布产物归档到 `archive/pre-3.5.8/`。

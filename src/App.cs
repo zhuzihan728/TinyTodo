@@ -258,7 +258,7 @@ namespace TinyTodo
         public MainForm(Store store, DataLocations locations)
         {
             this.store = store; this.locations = locations;
-            Ui.Setup(this, "TinyTodo 3.5.7", 720, 500);
+            Ui.Setup(this, "TinyTodo 3.5.8", 720, 500);
             StartPosition = FormStartPosition.Manual;
             appIcon = MakeIcon(); Icon = appIcon;
             var root = Ui.Root(Ui.Auto(), Ui.Fill(), Ui.Auto());
@@ -311,7 +311,7 @@ namespace TinyTodo
             menu.Closed += delegate { desktopMenuOpen = false; };
             // The tray release must finish before the popup takes foreground ownership.
             trayIcon = MakeTrayIcon();
-            tray = new NotifyIcon { Icon = trayIcon, Text = "TinyTodo 3.5.7", Visible = true };
+            tray = new NotifyIcon { Icon = trayIcon, Text = "TinyTodo 3.5.8", Visible = true };
             tray.MouseUp += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Right) QueueTrayMenu(Cursor.Position); };
             tray.MouseClick += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) ShowMain(); };
             bubble = new FloatingIcon(ToggleFromBubble, SaveIconPosition, menu);
@@ -539,7 +539,7 @@ namespace TinyTodo
             currentButton.Text = "待办 " + s.Tasks.Count(t => !t.Done); historyButton.Text = "历史 " + s.Tasks.Count(t => t.Done);
             ((SoftButton)currentButton).SelectedTab = !history; currentButton.Invalidate();
             ((SoftButton)historyButton).SelectedTab = history; historyButton.Invalidate();
-            Text = history ? "TinyTodo 3.5.7 · 历史" : "TinyTodo 3.5.7";
+            Text = history ? "TinyTodo 3.5.8 · 历史" : "TinyTodo 3.5.8";
         }
         private bool Change(Action<State> action)
         { try { store.Change(action); Render(); return true; } catch (Exception ex) { Error(ex); return false; } }
