@@ -28,12 +28,10 @@ internal static class CaptureDocs
         using (var main = new MainForm(store, new DataLocations(root)))
         {
             main.Show(); Save(main, "tasks");
-            using (var preview = new TaskPreview(store, draft.Id))
-            {
-                preview.Show(main); Application.DoEvents();
-                Children(preview).OfType<TaskViews>().Single().SelectView(2);
-                Save(preview, "tree"); preview.Close();
-            }
+            var views = Children(main).OfType<TaskViews>().Single();
+            views.SelectView(2); Application.DoEvents();
+            views.Graph.ZoomAt(.72F, new Point(views.Graph.Width / 2, views.Graph.Height / 2));
+            views.Graph.CenterCurrent(); Save(main, "tree");
         }
     }
 }
