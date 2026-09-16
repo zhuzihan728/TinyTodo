@@ -8,11 +8,11 @@ if not exist "%TODO_CSC%" (
   exit /b 1
 )
 if not exist bin mkdir bin
-"%TODO_CSC%" /nologo /noconfig /codepage:65001 /langversion:5 /optimize+ /target:winexe /platform:anycpu /out:bin\TinyTodo.exe /win32manifest:app.manifest /win32icon:assets\app.ico /reference:System.dll /reference:System.Core.dll /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll src\TaskControls.cs src\Presentation.cs src\Theme.cs src\Chrome.cs src\Widgets.cs src\MarkdownEditor.cs src\Model.cs src\Markdown.cs src\App.cs src\TaskViews.cs src\DataLocations.cs src\SettingsViews.cs
+"%TODO_CSC%" /nologo /noconfig /codepage:65001 /langversion:5 /optimize+ /target:winexe /platform:anycpu /out:bin\TinyTodo.exe /win32manifest:app.manifest /win32icon:assets\app.ico /reference:System.dll /reference:System.Core.dll /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll src\AssemblyInfo.cs src\TaskControls.cs src\Presentation.cs src\Theme.cs src\Chrome.cs src\Widgets.cs src\MarkdownEditor.cs src\Model.cs src\Markdown.cs src\App.cs src\TaskViews.cs src\DataLocations.cs src\SettingsViews.cs src\TaskWindows.cs src\ProgramCatalog.cs
 if errorlevel 1 (
   echo Build failed. If TinyTodo is running, exit it from the tray and try again.
   exit /b 1
 )
->bin\version.txt echo 3.5.6
+>bin\version.txt echo 3.5.7
 echo Built: bin\TinyTodo.exe
 exit /b 0

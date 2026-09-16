@@ -34,7 +34,8 @@ namespace TinyTodo
         public bool Floating { get; set; }
         public CatVisibilityMode CatMode { get; set; }
         public List<string> CatBlacklist { get; set; }
-        public Settings() { CatBlacklist = new List<string>(); }
+        public Dictionary<string, string> CatBlacklistNames { get; set; }
+        public Settings() { CatBlacklist = new List<string>(); CatBlacklistNames = new Dictionary<string, string>(); }
         public int X { get; set; }
         public int Y { get; set; }
         public bool HasPosition { get; set; }
@@ -230,6 +231,7 @@ namespace TinyTodo
     {
         private string path;
         public State Current { get; private set; }
+        public event EventHandler Changed;
         public string PathName { get { return path; } }
         public Store(string path) { this.path = path; }
         internal void AdoptPath(string nextPath) { path = nextPath; }
@@ -259,6 +261,7 @@ namespace TinyTodo
             // Mutate a copy; publish it only after durable replacement succeeds.
             State next = Serializer().Deserialize<State>(Serializer().Serialize(Current));
             action(next); Rules.Validate(next); Write(next, true); Current = next;
+            if (Changed != null) Changed(this, EventArgs.Empty);
         }
         private void Write(State state, bool backup)
         {

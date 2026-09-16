@@ -10,6 +10,24 @@ namespace TinyTodo
     // One caption and frame shared by all app windows. Client controls never overlap it.
     internal class AppWindow : Form
     {
+        // Session-only sizes; never written to task data or application settings.
+        private static readonly Dictionary<string, Size> sessionSizes = new Dictionary<string, Size>();
+        protected virtual string SizeMemoryKey { get { return GetType() == typeof(AppWindow) ? null : GetType().FullName; } }
+        protected override void OnLoad(EventArgs e)
+        {
+            Size remembered; string key = SizeMemoryKey;
+            if (CanResize && key != null && sessionSizes.TryGetValue(key, out remembered))
+            { ClientSize = remembered; Ui.Fit(this); }
+            base.OnLoad(e);
+        }
+        private Size resizeStart;
+        protected override void OnResizeBegin(EventArgs e) { resizeStart = ClientSize; base.OnResizeBegin(e); }
+        protected override void OnResizeEnd(EventArgs e)
+        {
+            base.OnResizeEnd(e);
+            string key = SizeMemoryKey;
+            if (CanResize && key != null && Visible && WindowState == FormWindowState.Normal && ClientSize != resizeStart) sessionSizes[key] = ClientSize;
+        }
         private readonly IconButton closeButton, minimizeButton;
         private readonly List<Control> captionActions = new List<Control>();
         private readonly List<Control> grips = new List<Control>();
@@ -18,13 +36,19 @@ namespace TinyTodo
         { var b = new IconButton(glyph) { AccessibleName = name }; b.Click += click; captionTips.SetToolTip(b, name); captionActions.Add(b); Controls.Add(b); PerformLayout(); return b; }
         internal FloatingSwitch AddFloatingSwitch(Action<bool> changed)
         { var b = new FloatingSwitch { AccessibleName = "收起猫猫" }; b.Changed = changed; captionTips.SetToolTip(b, b.AccessibleName); b.TextChanged += delegate { captionTips.SetToolTip(b, b.Text); }; captionActions.Add(b); Controls.Add(b); PerformLayout(); return b; }
+        protected override bool ShowWithoutActivation { get { return true; } }
         internal bool CanResize = true;
         internal int CaptionHeight { get { return Ui.U(40); } }
         [DllImport("user32.dll")] private static extern bool ReleaseCapture();
         [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr h, int m, IntPtr w, IntPtr l);
+        private readonly Timer feedbackTimer = new Timer { Interval = 170 };
+        private int feedbackStep;
+        internal int FeedbackCount { get; private set; }
+        internal void ConflictFeedback()
+        { FeedbackCount++; feedbackStep = 1; feedbackTimer.Start(); Invalidate(); }
         internal AppWindow()
         {
-            Icon = Theme.AppIcon; AutoScaleMode = AutoScaleMode.None; FormBorderStyle = FormBorderStyle.None;
+            TopMost = true; Icon = Theme.AppIcon; AutoScaleMode = AutoScaleMode.None; FormBorderStyle = FormBorderStyle.None;
             SetStyle(ControlStyles.ResizeRedraw | ControlStyles.OptimizedDoubleBuffer, true);
             Padding = new Padding(Ui.U(3), CaptionHeight, Ui.U(3), Ui.U(3));
             closeButton = new IconButton(Glyph.Close) { AccessibleName = "关闭" };
@@ -32,6 +56,7 @@ namespace TinyTodo
             closeButton.Click += delegate { Close(); };
             minimizeButton.Click += delegate { WindowState = FormWindowState.Minimized; };
             Controls.Add(closeButton); Controls.Add(minimizeButton);
+            feedbackTimer.Tick += delegate { feedbackStep++; if (feedbackStep > 4) { feedbackStep = 0; feedbackTimer.Stop(); } Invalidate(); };
             TextChanged += delegate { Invalidate(); };
             for (int i = 0; i < 4; i++) { var grip = new CornerGrip(this, i); grips.Add(grip); Controls.Add(grip); }
         }
@@ -65,7 +90,7 @@ namespace TinyTodo
         {
             base.OnPaint(e); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             using (var path = Theme.Rounded(new RectangleF(1, 1, Width - 3, Height - 3), Ui.U(16)))
-            using (var pen = new Pen(Theme.Border, Ui.U(1))) e.Graphics.DrawPath(pen, path);
+            using (var pen = new Pen(feedbackStep % 2 == 1 ? Theme.Rose : Theme.Border, Ui.U(feedbackStep % 2 == 1 ? 3 : 1))) e.Graphics.DrawPath(pen, path);
             int x = Ui.U(16);
             if (Theme.Logo != null)
             {
@@ -111,7 +136,7 @@ namespace TinyTodo
             protected override void OnMouseDown(MouseEventArgs e)
             { base.OnMouseDown(e); if (e.Button != MouseButtons.Left || !owner.CanResize) return; ReleaseCapture(); SendMessage(owner.Handle, 0x112, new IntPtr(0xF000 + (corner == 0 ? 4 : corner == 1 ? 5 : corner == 2 ? 7 : 8)), IntPtr.Zero); }
         }
-        protected override void Dispose(bool disposing) { if (disposing) captionTips.Dispose(); base.Dispose(disposing); }
+        protected override void Dispose(bool disposing) { if (disposing) { TaskWindows.ForgetAutomaticHide(this); feedbackTimer.Dispose(); captionTips.Dispose(); } base.Dispose(disposing); }
     }
 
     internal class SurfacePanel : Panel
@@ -132,6 +157,28 @@ namespace TinyTodo
     }
     internal static class ThemedDialog
     {
+        internal static AppWindow Ask(Form origin, Store store, string text, string caption, Action accept)
+        { return Modeless(origin, store, text, caption, accept, true); }
+        internal static void Notify(Form origin, string text, string caption = "TinyTodo", MessageBoxButtons buttons = MessageBoxButtons.OK, MessageBoxIcon icon = MessageBoxIcon.None)
+        { Modeless(origin, null, text, caption, null, false); }
+        private static AppWindow Modeless(Form origin, Store store, string text, string caption, Action accept, bool cancellable)
+        {
+            if (origin != null && origin.IsDisposed) origin = null;
+            var dialog = new AppWindow(); Ui.Setup(dialog, caption, 480, 280); dialog.CanResize = false;
+            var root = Ui.Root(Ui.Fill(), Ui.Auto());
+            var message = new ReadOnlyText { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, BorderStyle = BorderStyle.None, BackColor = Theme.Canvas, Text = text, Font = Theme.Font(10, FontStyle.Regular, text) };
+            var bar = Ui.Bar();
+            var ok = Ui.Button("确定", delegate { dialog.Close(); if (accept != null && (origin == null || !origin.IsDisposed)) accept(); }); bar.Controls.Add(ok);
+            if (cancellable)
+            {
+                var cancel = Ui.Button("取消", delegate { dialog.Close(); }); bar.Controls.Add(cancel); dialog.CancelButton = cancel; dialog.AcceptButton = cancel;
+            }
+            else { dialog.AcceptButton = ok; dialog.CancelButton = ok; }
+            root.Controls.Add(message, 0, 0); root.Controls.Add(bar, 0, 1); dialog.Controls.Add(root);
+            EventHandler dispose = delegate { dialog.Dispose(); };
+            if (origin != null) { origin.Disposed += dispose; dialog.Disposed += delegate { origin.Disposed -= dispose; }; }
+            TaskWindows.Show(store, dialog, origin); return dialog;
+        }
         internal static DialogResult Show(string text, string caption = "TinyTodo", MessageBoxButtons buttons = MessageBoxButtons.OK,
             MessageBoxIcon icon = MessageBoxIcon.None, MessageBoxDefaultButton defaultButton = MessageBoxDefaultButton.Button1)
         { return Show(null, text, caption, buttons, icon, defaultButton); }

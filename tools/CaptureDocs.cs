@@ -44,11 +44,21 @@ internal static class CaptureDocs
         store.Change(s => { s.Tasks.Clear(); s.Tasks.AddRange(new[] { research, draft, review, publish }); s.Window = new Settings { CatMode = CatVisibilityMode.Always }; });
         using (var main = new MainForm(store, new DataLocations(root)))
         {
-            main.Show(); Save(main, "tasks");
+            main.Show(); main.Activate(); Save(main, "tasks");
             var views = Children(main).OfType<TaskViews>().Single();
             views.SelectView(2); Application.DoEvents();
             views.Graph.ZoomAt(.72F, new Point(views.Graph.Width / 2, views.Graph.Height / 2));
             views.Graph.CenterCurrent(); Save(main, "tree");
+        }
+        using (var settings = new SettingsForm(store, new DataLocations(root)))
+        {
+            settings.AddBlacklist(new ProgramEntry { Name = "Visual Studio Code", Executable = "Code.exe" });
+            settings.AddBlacklist(new ProgramEntry { Name = "Outlook", Executable = "OUTLOOK.exe" });
+            settings.Show(); settings.Activate(); Application.DoEvents();
+            Children(settings).OfType<TextBox>().Single(t => t.ReadOnly && t.Multiline).Text = @"C:\Users\You\AppData\Local\TinyTodo";
+            var settle = System.Diagnostics.Stopwatch.StartNew();
+            while (settle.ElapsedMilliseconds < 650) { Application.DoEvents(); System.Threading.Thread.Sleep(10); }
+            Save(settings, "settings");
         }
     }
 }

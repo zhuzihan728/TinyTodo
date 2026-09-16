@@ -67,33 +67,45 @@ namespace TinyTodo
         }
         internal static void AddRelated(Form owner, Store store, string id, bool before, Action refresh)
         {
-            using (var editor = new TaskEditor(store, null, id, before))
-            { editor.TopMost = owner.TopMost; if (editor.ShowDialog(owner) == DialogResult.OK && !owner.IsDisposed) refresh(); }
+            TaskWindows.Edit(store, owner, null, id, before);
         }
         internal static void Edit(Form owner, Store store, string id, Action refresh)
         {
-            using (var editor = new TaskEditor(store, Rules.Get(store.Current, id)))
-            { editor.TopMost = owner.TopMost; if (editor.ShowDialog(owner) == DialogResult.OK && !owner.IsDisposed) refresh(); }
+            TaskWindows.Edit(store, owner, id);
         }
         internal static void ToggleImportant(Form owner, Store store, string id, Action refresh)
         {
-            try { store.Change(s => { Todo t = Rules.Get(s, id); t.Important = !t.Important; }); }
-            catch (Exception ex) { ThemedDialog.Show(owner, ex.Message, "无法保存", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+            try { Action<State> change = s => { Todo t = Rules.Get(s, id); t.Important = !t.Important; };
+                if (!TaskWindows.CanChange(store, change, owner)) return; store.Change(change); }
+            catch (Exception ex) { ThemedDialog.Notify(owner, ex.Message, "无法保存", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
             if (!owner.IsDisposed) refresh();
         }
         internal static void Delete(Form owner, Store store, string id, Action refresh)
         {
+            if (!TaskWindows.CanChange(store, s => Rules.Delete(s, id), owner)) return;
             Todo t = Rules.Get(store.Current, id);
             int count = store.Current.Tasks.Count(x => x.Prerequisites.Contains(id));
             string prompt = "永久删除“" + t.Name + "”？" + (count > 0 ? "\n" + count + " 个后续任务将解除这项前置关系。" : "") + "\n此操作无法撤销。";
-            if (ThemedDialog.Show(owner, prompt, "永久删除", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.OK) return;
-            try
+            var snapshot = DeleteSignature(store.Current, id);
+            ThemedDialog.Ask(owner, store, prompt, "永久删除", delegate
             {
-                string warning = DeleteConfirmed(store, id);
-                if (warning.Length > 0) ThemedDialog.Show(warning, "TinyTodo");
-            }
-            catch (Exception ex) { ThemedDialog.Show("删除失败，任务仍保留：\n" + ex.Message, "TinyTodo", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
-            if (!owner.IsDisposed) refresh();
+                if (!store.Current.Tasks.Any(x => x.Id == id)) return;
+                if (!TaskWindows.CanChange(store, s => Rules.Delete(s, id), owner)) return;
+                if (snapshot != DeleteSignature(store.Current, id))
+                { ThemedDialog.Notify(owner, "任务列表已发生变化，请重新确认删除。", "永久删除"); return; }
+                try
+                {
+                    string warning = DeleteConfirmed(store, id);
+                    if (warning.Length > 0) ThemedDialog.Notify(owner, warning, "TinyTodo");
+                }
+                catch (Exception ex) { ThemedDialog.Notify(owner, "删除失败，任务仍保留：\n" + ex.Message, "TinyTodo"); }
+                if (!owner.IsDisposed) refresh();
+            });
+        }
+        private static string DeleteSignature(State state, string id)
+        {
+            return new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(state.Tasks.FirstOrDefault(t => t.Id == id)) + "|" +
+                String.Join(",", state.Tasks.Where(t => t.Prerequisites.Contains(id)).Select(t => t.Id).OrderBy(x => x));
         }
         internal static string DeleteConfirmed(Store store, string id)
         {
@@ -127,13 +139,13 @@ namespace TinyTodo
         private readonly System.Windows.Forms.Timer dateTimer;
         private DateTime today = DateTime.Today;
         private readonly TaskViews views;
+        private readonly PreviewLayout page;
         private bool rendering, queued;
         internal TaskPreview(Store store, string id)
         {
             this.store = store; this.id = id;
             Ui.Setup(this, "任务预览", 740, 620);
-            var root = new PreviewLayout { Dock = DockStyle.Fill };
-            var bar = new Panel();
+            var root = page = new PreviewLayout();
             var left = Ui.Bar(); left.Controls.Add(Ui.Button("←", delegate { GoBack(); }));
             left.Controls.Add(Ui.Button("编辑", delegate { Edit(); }));
             done = Ui.Button("完成", delegate { if (!rendering) Queue(delegate { Toggle(this.id); }); });
@@ -143,7 +155,7 @@ namespace TinyTodo
             left.Controls.Add(important);
             var delete = Ui.Button("永久删除", delegate { Queue(delegate { TaskActions.Delete(this, store, this.id, Render); }); });
             delete.ForeColor = Theme.Rose; delete.Anchor = AnchorStyles.Right | AnchorStyles.Top;
-            bar.Controls.Add(left); bar.Controls.Add(delete);
+            var bar = new PreviewActionBar(left, delete);
             title = new ReadOnlyText { Dock = DockStyle.Fill, Margin = Padding.Empty, Multiline = true, ReadOnly = true, BorderStyle = BorderStyle.None,
                 Font = Theme.Font(14F, FontStyle.Bold, "任务预览"), ForeColor = Theme.Ink, BackColor = BackColor, ScrollBars = ScrollBars.None };
             title.HandleCreated += delegate { ClearTitleMargins(); };
@@ -177,8 +189,8 @@ namespace TinyTodo
             views.Graph.OpenTask = Navigate;
             views.Graph.ToggleTask = delegate(string taskId) { Queue(delegate { Toggle(taskId); }); };
             views.Graph.TaskMenu = delegate(string taskId, Point point) { TaskActions.Menu(this, views.Graph, point, store, taskId, Render); };
-            root.Bind(bar, left, delete, titleRow, meta, description, counts, views);
-            Controls.Add(root); KeyPreview = true;
+            root.Bind(titleRow, meta, description, counts, views);
+            Ui.FixedPage(this, new ScrollSurface(root, 0) { WholePageWheel = true }, bar, true); KeyPreview = true;
             KeyDown += delegate(object sender, KeyEventArgs e)
             {
                 if (Ui.ExactModifiers(e, Keys.None) && e.KeyCode == Keys.Escape) { e.SuppressKeyPress = true; Close(); }
@@ -186,7 +198,8 @@ namespace TinyTodo
             };
             dateTimer = new System.Windows.Forms.Timer { Interval = 1000 };
             dateTimer.Tick += delegate { if (today != DateTime.Today) { today = DateTime.Today; Render(); } }; dateTimer.Start();
-            Shown += delegate { Ui.Fit(this); }; Render();
+            TaskWindows.Watch(store, this, Render);
+            Shown += delegate { Ui.Fit(this); page.RefreshPage(); }; Render();
         }
         private void Queue(Action action)
         {
@@ -222,30 +235,30 @@ namespace TinyTodo
                 important.Text = t.Important ? "取消" : "设为"; important.AccessibleName = important.Text + "重要标记";
                 done.Text = t.Done ? "恢复待办" : "完成";
                 counts.Text = "前置 " + t.Prerequisites.Count + " 项 · 后续 " + store.Current.Tasks.Count(x => x.Prerequisites.Contains(id)) + " 项";
-                views.Render(store.Current, id, null); Text = "任务预览 · " + t.Name;
+                views.Render(store.Current, id, null); Text = "任务预览 · " + t.Name; page.RefreshPage();
             }
             finally { rendering = false; }
         }
         private void Edit()
         {
-            using (var editor = new TaskEditor(store, Rules.Get(store.Current, id)))
-            { editor.TopMost = TopMost; if (editor.ShowDialog(this) == DialogResult.OK) Render(); }
+            TaskWindows.Edit(store, this, id);
         }
         private void Toggle(string target)
         {
             if (views.HasCompletionFeedback(target)) return;
             try
             {
-                store.Change(s => { if (Rules.Get(s, target).Done) Rules.Restore(s, target); else Rules.Complete(s, target); });
+                Action<State> change = s => { if (Rules.Get(s, target).Done) Rules.Restore(s, target); else Rules.Complete(s, target); };
+                if (!TaskWindows.CanChange(store, change, this)) return; store.Change(change);
                 views.ShowCompletionFeedback(store.Current, target);
             }
-            catch (Exception ex) { ThemedDialog.Show(this, ex.Message, "TinyTodo", MessageBoxButtons.OK, MessageBoxIcon.Information); }
+            catch (Exception ex) { ThemedDialog.Notify(this, ex.Message, "TinyTodo", MessageBoxButtons.OK, MessageBoxIcon.Information); }
             Render();
         }
         private void SavePreferences(Action<Settings> update)
         {
             try { store.Change(s => update(s.Window)); }
-            catch (Exception ex) { ThemedDialog.Show(this, ex.Message, "无法保存", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+            catch (Exception ex) { ThemedDialog.Notify(this, ex.Message, "无法保存", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
             Render();
         }
         protected override void Dispose(bool disposing)
@@ -257,6 +270,11 @@ namespace TinyTodo
         private readonly Store store;
         private readonly string id, anchor;
         private readonly bool before;
+        protected override string SizeMemoryKey
+        { get { return GetType().FullName + (id != null ? ":edit" : anchor == null ? ":add" : before ? ":before" : ":after"); } }
+        internal string TaskId { get { return id; } }
+        internal string AnchorId { get { return anchor; } }
+        internal bool Before { get { return before; } }
         private readonly TextBox nameBox, descriptionBox;
         private readonly DateInput date;
         private readonly TaskChoices prerequisites;
@@ -265,14 +283,20 @@ namespace TinyTodo
             public string Id; public string Text; public bool Important;
             public override string ToString() { return Important ? "重要 · " + Text : Text; }
         }
-        private sealed class TaskChoices : Control
+        private sealed class TaskChoices : Control, IWheelTarget
         {
             internal readonly List<Choice> Items = new List<Choice>();
             private readonly HashSet<int> chosen = new HashSet<int>();
             private readonly ThinScroll scroll = new ThinScroll();
-            private int first, selected = -1; internal int ItemHeight = Ui.U(30);
+            private int first, selected = -1, wheelRemainder; internal int ItemHeight = Ui.U(30);
             internal event ItemCheckEventHandler ItemCheck;
             internal IEnumerable<Choice> CheckedItems { get { return Items.Where((x, i) => chosen.Contains(i)); } }
+            internal void ReplaceChoices(IEnumerable<Choice> values, System.Collections.Generic.HashSet<string> selectedIds)
+            {
+                Items.Clear(); chosen.Clear(); Items.AddRange(values);
+                for (int i = 0; i < Items.Count; i++) if (selectedIds.Contains(Items[i].Id)) chosen.Add(i);
+                selected = Math.Min(selected, Items.Count - 1); Sync(); Invalidate();
+            }
             internal int AddChoice(Choice value) { Items.Add(value); Sync(); return Items.Count - 1; }
             internal bool GetItemChecked(int index) { return chosen.Contains(index); }
             internal void SetItemChecked(int index, bool value)
@@ -299,7 +323,10 @@ namespace TinyTodo
             }
             protected override void OnMouseDown(MouseEventArgs e)
             { base.OnMouseDown(e); Focus(); if (!Enabled || e.Button != MouseButtons.Left) return; int index = first + e.Y / ItemHeight; if (index >= 0 && index < Items.Count) { selected = index; SetItemChecked(index, !chosen.Contains(index)); } }
-            protected override void OnMouseWheel(MouseEventArgs e) { first -= e.Delta / 120 * 3; Sync(); Invalidate(); base.OnMouseWheel(e); }
+            bool IWheelTarget.CanScrollWheel(int delta) { return delta > 0 ? first > 0 : first < scroll.Maximum; }
+            void IWheelTarget.ScrollWheel(int delta) { ScrollRows(delta); }
+            private void ScrollRows(int delta) { first -= WheelInput.Steps(ref wheelRemainder, delta) * 3; Sync(); Invalidate(); }
+            protected override void OnMouseWheel(MouseEventArgs e) { var handled = e as HandledMouseEventArgs; if (handled != null) handled.Handled = true; ScrollRows(e.Delta); }
             protected override bool IsInputKey(Keys key) { return key == Keys.Up || key == Keys.Down || base.IsInputKey(key); }
             protected override void OnKeyDown(KeyEventArgs e)
             {
@@ -316,7 +343,6 @@ namespace TinyTodo
             this.anchor = anchor; this.before = before;
             this.store = store; id = task == null ? null : task.Id;
             Ui.Setup(this, task == null ? (anchor == null ? "添加任务" : before ? "添加前置" : "添加后续") : "编辑任务", 600, 710);
-            MinimizeBox = false;
             var root = Ui.Root(Ui.Auto(), Ui.Auto(), Ui.Auto(), Ui.Auto(), Ui.Auto(),
                 new RowStyle(SizeType.Absolute, Ui.U(210)), Ui.Auto(), Ui.Fill(), Ui.Auto());
             nameBox = new TextBox { Dock = DockStyle.Top, MaxLength = 120, Text = task == null ? "" : task.Name };
@@ -351,29 +377,60 @@ namespace TinyTodo
             root.Controls.Add(Ui.Label("Markdown"), 0, 4); root.Controls.Add(descriptionTabs, 0, 5);
             root.Controls.Add(Ui.Label(task != null && task.Done ? "前置任务（已完成）" : "前置任务"), 0, 6);
             root.Controls.Add(InputSurface.Wrap(prerequisites), 0, 7); root.Controls.Add(actions, 0, 8); Ui.ScrollRoot(this, root, 650);
+            TaskWindows.Watch(store, this, RefreshChoices);
             Shown += delegate { Ui.Fit(this); nameBox.Focus(); nameBox.SelectionStart = nameBox.TextLength; };
         }
-        private void Save()
+        private void RefreshChoices()
         {
+            var checkedIds = new HashSet<string>(prerequisites.CheckedItems.Select(c => c.Id));
+            var excluded = anchor != null && before && store.Current.Tasks.Any(t => t.Id == anchor) ? new HashSet<string>(Rules.Related(store.Current, anchor, false).Keys) : new HashSet<string>();
+            if (anchor != null && before) excluded.Add(anchor);
+            prerequisites.ReplaceChoices(store.Current.Tasks.Where(t => t.Id != id && !excluded.Contains(t.Id)).OrderBy(t => t.Done).ThenBy(t => t.CreatedAt)
+                .Select(t => new Choice { Id = t.Id, Text = (t.Done ? "[已完成] " : "[待办] ") + t.Name, Important = t.Important }), checkedIds);
+        }
+        internal bool Conflicts(State current, State next)
+        {
+            var json = new System.Web.Script.Serialization.JavaScriptSerializer();
+            foreach (string key in new string[] { id, anchor }.Where(x => x != null))
+                if (json.Serialize(current.Tasks.FirstOrDefault(t => t.Id == key)) != json.Serialize(next.Tasks.FirstOrDefault(t => t.Id == key))) return true;
+            return prerequisites.CheckedItems.Any(c => !next.Tasks.Any(t => t.Id == c.Id));
+        }
+        private bool confirming;
+        private void Save() { Save(false); }
+        private void Save(bool confirmed)
+        {
+            if (confirming) { ConflictFeedback(); return; }
             try
             {
                 var selected = prerequisites.CheckedItems.Cast<Choice>().Select(x => x.Id).ToList();
                 if (anchor != null && before)
                 {
                     int affected = Rules.CompletedAffectedByPrerequisite(store.Current, anchor).Count;
-                    if (affected > 0 && ThemedDialog.Show(this, "添加未完成前置后，" + affected + " 个已完成任务需要恢复为待办。继续？", "添加前置", MessageBoxButtons.OKCancel, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.OK) return;
+                    if (affected > 0 && !confirmed)
+                    {
+                        confirming = true;
+                        var prompt = ThemedDialog.Ask(this, store, "添加未完成前置后，" + affected + " 个已完成任务需要恢复为待办。继续？", "添加前置", delegate
+                        {
+                            confirming = false;
+                            if (IsDisposed) return;
+                            Save(Rules.CompletedAffectedByPrerequisite(store.Current, anchor).Count == affected);
+                        });
+                        prompt.FormClosed += delegate { confirming = false; }; return;
+                    }
                 }
-                store.Change(delegate(State s)
+                Action<State> change = delegate(State s)
                 {
                     Todo t = id == null ? new Todo() : Rules.Get(s, id);
                     t.Name = nameBox.Text.Trim(); t.Description = descriptionBox.Text;
                     t.Due = date.Checked ? date.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : null;
                     if (!t.Done) t.Prerequisites = selected;
                     if (id == null) { if (anchor == null) s.Tasks.Add(t); else Rules.AddRelated(s, t, anchor, before); }
-                });
+                };
+                if (!TaskWindows.CanChange(store, change, this, this)) return;
+                store.Change(change);
                 DialogResult = DialogResult.OK; Close();
             }
-            catch (Exception ex) { ThemedDialog.Show(this, ex.Message, "无法保存", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+            catch (Exception ex) { ThemedDialog.Notify(this, ex.Message, "无法保存", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
         }
     }
 }

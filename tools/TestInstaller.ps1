@@ -1,11 +1,25 @@
-﻿$ErrorActionPreference = 'Stop'
+﻿param([string]$Version = '3.5.7')
+$ErrorActionPreference = 'Stop'
 $project = Split-Path -Parent $PSScriptRoot
 Push-Location $project
 try {
-    $reg = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\TinyTodo_is1'
+    $reg = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\TinyTodo.InstallerValidation_is1'
     if (Test-Path $reg) { throw 'Existing install detected; test stopped.' }
     $folder = Join-Path $project ('artifacts/install-validation-' + [Guid]::NewGuid().ToString('N'))
-    $setup = (Resolve-Path -LiteralPath dist/TinyTodo-3.5.6-Setup.exe).Path
+    New-Item -ItemType Directory -Path $folder -Force | Out-Null
+    $validation = Join-Path $folder 'setup'
+    New-Item -ItemType Directory -Path $validation -Force | Out-Null
+    $script = Get-Content -LiteralPath packaging/TinyTodo.iss -Raw
+    $script = $script.Replace('AppId=TinyTodo', 'AppId=TinyTodo.InstallerValidation')
+    $script = $script.Replace('SetupIconFile=..\assets\app.ico', ('SetupIconFile=' + (Join-Path $project 'assets/app.ico')))
+    $script = $script.Replace('{userstartup}', '{app}\test-shortcuts\Startup').Replace('{autodesktop}', '{app}\test-shortcuts\Desktop').Replace('{group}', '{app}\test-shortcuts\StartMenu')
+    $script = '#define PackageRoot "' + (Join-Path $project ("dist/TinyTodo-Windows-$Version")) + '"' + "`n" + '#define OutputRoot "' + $validation + '"' + "`n" + $script
+    $scriptPath = Join-Path $validation 'validation.iss'
+    [IO.File]::WriteAllText($scriptPath, $script, [Text.UTF8Encoding]::new($true))
+    Copy-Item -LiteralPath packaging/ChineseSimplified.isl,packaging/INSTALL.txt -Destination $validation
+    & (Join-Path $project 'tools/InnoSetup/ISCC.exe') '/Qp' $scriptPath
+    if ($LASTEXITCODE -ne 0) { throw 'Isolated installer compilation failed.' }
+    $setup = Join-Path $validation ("TinyTodo-$Version-Setup.exe")
     $install = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/NOICONS','/TASKS=""',('/DIR="'+$folder+'"')) -WindowStyle Hidden -Wait -PassThru
     if ($install.ExitCode -ne 0) { throw 'Install failed.' }
     Add-Type @"

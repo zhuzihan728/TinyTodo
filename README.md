@@ -14,6 +14,10 @@
 
 ![猫猫开关](docs/screenshots/cat-toggle.png)
 
+独立窗口、固定操作栏与统一设置。
+
+![设置](docs/screenshots/settings.png)
+
 ![悬浮动画](assets/floating-icon.gif)
 
 > Disclaimer：本项目全部使用 GPT 制作，图片也由 GPT 生成。

@@ -108,6 +108,12 @@ internal static class UiTests
                 var hover = (HoverMarkdown)typeof(TaskTable).GetField("hoverPreview", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(table);
                 Rectangle cell = table.CellBounds(1, 0); Point local = new Point(cell.Left + Ui.U(25), cell.Top + cell.Height / 2);
                 Cursor.Position = table.PointToScreen(local); Mouse(table, "OnMouseMove", MouseButtons.None, local.X, local.Y);
+                PumpFor(500);
+                Assert(HoverWindow(hover) == null, "brief task hover does not open Markdown preview");
+                Point empty = new Point(Ui.U(15), table.Height - Ui.U(15));
+                Cursor.Position = table.PointToScreen(empty); Mouse(table, "OnMouseMove", MouseButtons.None, empty.X, empty.Y); PumpFor(350);
+                Assert(HoverWindow(hover) == null, "leaving task before dwell cancels the pending preview");
+                Cursor.Position = table.PointToScreen(local); Mouse(table, "OnMouseMove", MouseButtons.None, local.X, local.Y);
                 WaitUntil(() => HoverWindow(hover) != null, "task hover opens Markdown preview after its delay");
                 var card = HoverWindow(hover); PumpFor(800);
                 Assert(!card.IsDisposed && card.Visible, "Markdown preview stays open while pointer remains over original task");
@@ -131,6 +137,7 @@ internal static class UiTests
                 Point local = Point.Round(graph.ToScreen(new PointF(bounds.Left + 50, bounds.Top + 25)));
                 var hover = (HoverMarkdown)typeof(TaskGraph).GetField("tip", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(graph);
                 Cursor.Position = graph.PointToScreen(local); Mouse(graph, "OnMouseMove", MouseButtons.None, local.X, local.Y);
+                PumpFor(500); Assert(HoverWindow(hover) == null, "brief tree hover does not open Markdown preview");
                 WaitUntil(() => HoverWindow(hover) != null, "tree node hover opens preview");
                 var card = HoverWindow(hover); PumpFor(800);
                 Assert(!card.IsDisposed && card.Visible, "tree preview stays open over original node");
@@ -230,17 +237,17 @@ internal static class UiTests
     {
         using (var main = new MainForm(store, new DataLocations(Path.GetDirectoryName(store.PathName))))
         {
-            main.Show(); Application.DoEvents();
+            main.Show(); main.Activate(); Application.DoEvents();
             var views = Descendants(main).OfType<TaskViews>().Single(); var grid = views.First;
             var tabs = Descendants(main).OfType<SoftButton>().Where(x => x.Text.StartsWith("待办") || x.Text.StartsWith("历史")).ToArray();
             Assert(tabs.All(x => x.IndexTab) && tabs.Count(x => x.SelectedTab) == 1, "active and history share index tabs with one selected");
             int toggles = 0; grid.ToggleTask = delegate { toggles++; };
             Rectangle cell = grid.CellBounds(0, 0); RectangleF box = grid.CheckBounds(0);
-            Mouse(grid, "OnMouseDown", MouseButtons.Left, cell.Left + 2, cell.Top + cell.Height / 2);
-            Mouse(grid, "OnMouseUp", MouseButtons.Left, cell.Left + 2, cell.Top + cell.Height / 2);
+            Mouse(grid, "OnMouseDown", MouseButtons.Left, cell.Left + Ui.U(8), cell.Top + cell.Height / 2);
+            Mouse(grid, "OnMouseUp", MouseButtons.Left, cell.Left + Ui.U(8), cell.Top + cell.Height / 2);
             Assert(toggles == 0 && grid.SelectedId != null, "click outside checkbox only selects row");
             int checkboxX = (int)(box.X + box.Width / 2), y = (int)(box.Y + box.Height / 2);
-            Mouse(grid, "OnMouseDown", MouseButtons.Left, cell.Left + 2, y);
+            Mouse(grid, "OnMouseDown", MouseButtons.Left, cell.Left + Ui.U(8), y);
             Mouse(grid, "OnMouseUp", MouseButtons.Left, checkboxX, y);
             Assert(toggles == 0, "press outside and release inside checkbox cannot complete task");
             Mouse(grid, "OnMouseDown", MouseButtons.Left, checkboxX, y);
@@ -260,9 +267,9 @@ internal static class UiTests
             Assert(views.Mode == 0 && grid.Visible, "active tab leaves tree for list");
             var mode = Descendants(main).OfType<FloatingSwitch>().Single(); Rectangle before = main.Bounds;
             mode.Choose(true); Application.DoEvents();
-            Assert(main.Visible && !main.TopMost && main.Bounds == before, "switching open window to floating preserves visibility and bounds");
+            Assert(main.Visible && main.TopMost && main.Bounds == before, "switching open window to floating preserves visibility and bounds");
             mode.Choose(false); Application.DoEvents();
-            Assert(main.Visible && !main.TopMost && main.Bounds == before, "switching floating back preserves open window");
+            Assert(main.Visible && main.TopMost && main.Bounds == before, "switching floating back preserves open window");
             using (var editor = new TaskEditor(store, null))
             {
                 editor.Show(); Application.DoEvents();
@@ -345,7 +352,7 @@ internal static class UiTests
     {
         using (var main = new MainForm(store, new DataLocations(Path.GetDirectoryName(store.PathName))))
         {
-            main.Show(); Application.DoEvents();
+            main.Show(); main.Activate(); Application.DoEvents();
             // Exercise the default fullscreen policy without creating a manual summon override.
             main.UpdateDesktopVisibility(false); Application.DoEvents();
             var bubble = (FloatingIcon)typeof(MainForm).GetField("bubble", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main);
@@ -361,32 +368,20 @@ internal static class UiTests
                 Assert(main.Visible, "bubble reveals an inactive visible main window instead of collapsing it");
                 other.Close();
             }
-            using (var dialog = new TaskPreview(store, store.Current.Tasks.First().Id))
-            {
-                Exception failure = null;
-                dialog.Shown += delegate { dialog.BeginInvoke(new Action(delegate
-                {
-                    try
-                    {
-                        dialog.WindowState = FormWindowState.Minimized;
-                        main.ToggleFromBubble();
-                        Assert(main.Visible && dialog.Visible && dialog.WindowState == FormWindowState.Normal, "bubble restores modal preview without hiding its disabled owner");
-                        main.UpdateDesktopVisibility(true);
-                        Assert(!bubble.Visible && !main.TopMost && !dialog.TopMost, "fullscreen removes bubble and main/dialog pinning");
-                        IntPtr foreground = DesktopActivity.GetForegroundWindow();
-                        main.UpdateDesktopVisibility(false);
-                        Assert(bubble.Visible && !main.TopMost && !dialog.TopMost && DesktopActivity.GetForegroundWindow() == foreground, "bubble restoration leaves focus and other windows unchanged");
-                    }
-                    catch (Exception ex) { failure = ex; }
-                    finally { dialog.Close(); }
-                })); };
-                dialog.ShowDialog(main); if (failure != null) throw failure;
-            }
-            main.UpdateDesktopVisibility(false);
-            Assert(bubble.Visible && !main.TopMost, "floating mode keeps task window in normal window stack");
-            Descendants(main).OfType<FloatingSwitch>().Single().Choose(false);
-            main.UpdateDesktopVisibility(false);
-            Assert(!bubble.Visible && !main.TopMost, "normal window mode remains unpinned with no bubble");
+            var dialog = TaskWindows.Preview(store, main, store.Current.Tasks.First().Id);
+            Assert(main.Enabled && dialog.Enabled && !dialog.Modal, "preview leaves main window enabled");
+            dialog.WindowState = FormWindowState.Minimized; main.Hide(); main.ToggleFromBubble();
+            Assert(main.Visible && dialog.WindowState == FormWindowState.Minimized, "opening main does not override another window's minimize state");
+            TaskWindows.Present(dialog, main); PumpFor(120);
+            Assert(dialog.WindowState == FormWindowState.Normal && main.Enabled, "preview can be restored independently");
+            main.UpdateDesktopVisibility(true);
+            Assert(!bubble.Visible && main.TopMost && dialog.TopMost, "cat visibility does not change task-window layering");
+            IntPtr foreground = DesktopActivity.GetForegroundWindow(); main.UpdateDesktopVisibility(false);
+            Assert(bubble.Visible && DesktopActivity.GetForegroundWindow() == foreground, "cat restoration preserves foreground");
+            dialog.Close();
+            Assert(bubble.Visible && main.TopMost, "task window stays pinned with visible cat");
+            Descendants(main).OfType<FloatingSwitch>().Single().Choose(false); main.UpdateDesktopVisibility(false);
+            Assert(!bubble.Visible && main.TopMost, "task window stays pinned with hidden cat");
         }
         Assert(DesktopActivity.CoversScreen(new Rectangle(-1920, 0, 1920, 1080), new Rectangle(-1920, 0, 1920, 1080)), "borderless fullscreen detected on negative-coordinate monitor");
         Assert(!DesktopActivity.CoversScreen(new Rectangle(0, 0, 1920, 1040), new Rectangle(0, 0, 1920, 1080)), "working-area window is not mistaken for fullscreen");
@@ -429,28 +424,460 @@ internal static class UiTests
             Assert(clicks == 1, "cancelled mouse capture does not trigger stale bubble click");
         }
     }
-    private static void VerifyCatSettings(Store store)
+    private static void VerifyModeless(string folder)
     {
-        using (var settings = new FloatingSettingsForm(store))
+        var store = new Store(Path.Combine(folder, "modeless.json")); store.Load();
+        var a = new Todo { Name = "Edited task", Description = "original" };
+        var b = new Todo { Name = "Other task" }; var dependency = new Todo { Name = "Selected prerequisite" };
+        a.Prerequisites.Add(dependency.Id);
+        store.Change(s => s.Tasks.AddRange(new[] { a, b, dependency }));
+        using (var main = new MainForm(store, new DataLocations(folder)))
+        {
+            main.Show(); main.Activate(); Application.DoEvents();
+            // This fixture isolates window independence; real timed fullscreen behavior is tested in VerifyInputIsolation.
+            var timer = (System.Windows.Forms.Timer)typeof(MainForm).GetField("timer", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main); timer.Stop();
+            var preview = TaskWindows.Preview(store, main, a.Id);
+            var editor = TaskWindows.Edit(store, preview, a.Id);
+            var draft = Descendants(editor).OfType<TextBox>().Single(t => t.MaxLength == 120); draft.Text = "Unsaved draft";
+            Assert(main.Enabled && preview.Enabled && editor.Enabled && !editor.Modal && editor.Owner == null, "editing leaves main and preview interactive");
+            Assert(editor.MinimizeBox && preview.MinimizeBox, "modeless windows retain minimize controls");
+            Assert(Object.ReferenceEquals(editor, TaskWindows.Edit(store, main, a.Id)), "duplicate edit restores existing draft");
+            int flashes = editor.FeedbackCount;
+            TaskActions.ToggleImportant(main, store, a.Id, delegate { });
+            Assert(!Rules.Get(store.Current, a.Id).Important && editor.FeedbackCount > flashes && main.FeedbackCount > 0, "conflicting edit is blocked with visible double-flash feedback");
+            TaskActions.ToggleImportant(main, store, b.Id, delegate { }); Application.DoEvents();
+            Assert(Rules.Get(store.Current, b.Id).Important && draft.Text == "Unsaved draft", "unrelated updates succeed without replacing draft text");
+            Assert(!TaskWindows.CanChange(store, s => Rules.Delete(s, dependency.Id), main), "deleting selected prerequisite cannot invalidate open draft");
+            var otherEditor = TaskWindows.Edit(store, main, b.Id);
+            Descendants(otherEditor).OfType<TextBox>().Single(t => t.MaxLength == 120).Text = "Other task renamed";
+            Descendants(otherEditor).OfType<Button>().Single(t => t.Text == "保存").PerformClick(); Application.DoEvents();
+            Assert(otherEditor.IsDisposed && Rules.Get(store.Current, b.Id).Name == "Other task renamed" && draft.Text == "Unsaved draft", "another task saves while first editor remains unchanged");
+            Control choices = Descendants(editor).First(c => c.GetType().Name == "TaskChoices");
+            var choiceItems = (System.Collections.IEnumerable)choices.GetType().GetField("Items", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(choices);
+            Assert(choiceItems.Cast<object>().Any(x => x.ToString().Contains("Other task renamed")), "available prerequisites refresh after another editor saves");
+            preview.WindowState = FormWindowState.Minimized; Application.DoEvents();
+            Assert(editor.Visible && main.Visible, "minimizing preview leaves editor and main visible");
+            TaskWindows.Present(preview, main); main.WindowState = FormWindowState.Minimized; Application.DoEvents();
+            Assert(editor.Visible && preview.Visible, "minimizing main does not hide independent windows");
+            main.ToggleFromBubble();
+            main.OpenSettings(); var settings = TaskWindows.Find<SettingsForm>(store, f => true);
+            main.OpenSettings(); Assert(Object.ReferenceEquals(settings, TaskWindows.Find<SettingsForm>(store, f => true)) && main.Enabled && editor.Enabled, "settings is modeless and reuses the same instance");
+            var menu = (ContextMenuStrip)typeof(MainForm).GetField("menu", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main);
+            Assert(menu.Items.OfType<ToolStripMenuItem>().Any(i => i.Text == "设置") && !menu.Items.OfType<ToolStripMenuItem>().Any(i => i.Text == "完成历史"), "tray and cat menu expose Settings instead of data folder");
+            menu.Items.OfType<ToolStripMenuItem>().Single(i => i.Text == "设置").PerformClick(); Application.DoEvents();
+            Assert(Object.ReferenceEquals(settings, TaskWindows.Find<SettingsForm>(store, f => true)), "tray Settings action reaches same window");
+            Assert(Descendants(settings).OfType<ComboBox>().Count() == 0 && !Descendants(settings).OfType<Button>().Any(c => c.Text == "悬浮设置"), "floating options are inline with custom selector");
+            settings.AddBlacklist(new ProgramEntry { Name = "Visual Studio Code", Executable = "Code.exe" });
+            Assert(settings.BlacklistKeys.SequenceEqual(new[] { "Code" }), "program choice immediately checks blacklist row");
+            settings.Blacklist.Pick(0); Assert(!settings.BlacklistKeys.Any(), "untick updates draft immediately before removal feedback finishes");
+            settings.SaveSettings(); Assert(store.Current.Window.CatBlacklist.Count == 0, "saving during removal animation persists removal");
+            bool accepted = false;
+            var prompt = ThemedDialog.Ask(main, store, "非模态确认", "确认", delegate { accepted = true; });
+            Assert(main.Enabled && preview.Enabled && editor.Enabled && !prompt.Modal, "confirmation leaves other windows usable");
+            Descendants(prompt).OfType<Button>().Single(c => c.Text == "取消").PerformClick(); Assert(!accepted, "cancelled confirmation does not mutate data");
+            Descendants(editor).OfType<Button>().Single(t => t.Text == "保存").PerformClick(); Application.DoEvents();
+            Assert(Rules.Get(store.Current, a.Id).Name == "Unsaved draft" && preview.Text.Contains("Unsaved draft"), "saving draft updates open preview without reopening");
+            Assert(Descendants(main).OfType<TaskTable>().Single().Rows.Any(r => r.Task != null && r.Task.Name == "Unsaved draft"), "saving draft updates main list immediately");
+            Point mainPosition = main.Location, previewPosition = preview.Location;
+
+            TaskWindows.UpdateFullscreen(rect => true);
+            Assert(!main.Visible && !preview.Visible && !preview.IsDisposed, "same-screen fullscreen actually hides windows and preserves state");
+            TaskWindows.UpdateFullscreen(rect => false);
+            Assert(main.Visible && preview.Visible && main.Location == mainPosition && preview.Location == previewPosition && main.TopMost && preview.TopMost, "leaving fullscreen restores pinned windows at previous positions");
+            main.Hide(); TaskWindows.UpdateFullscreen(rect => true); TaskWindows.UpdateFullscreen(rect => false);
+            Assert(!main.Visible && preview.Visible, "fullscreen recovery never reopens a manually hidden window");
+            if (Screen.AllScreens.Length > 1)
+            {
+                var firstScreen = Screen.AllScreens[0]; var otherScreen = Screen.AllScreens[1];
+                main.Location = firstScreen.WorkingArea.Location; main.Show(); preview.Location = otherScreen.WorkingArea.Location;
+                TaskWindows.UpdateFullscreen(rect => rect == firstScreen.Bounds);
+                Assert(!main.Visible && preview.Visible, "fullscreen on one monitor leaves other monitor window visible");
+                TaskWindows.UpdateFullscreen(rect => false);
+            }
+            preview.Close();
+        }
+        Assert(TaskWindows.Find<TaskEditor>(store, f => true) == null && TaskWindows.Find<SettingsForm>(store, f => true) == null, "closing main disposes modeless windows and releases draft locks");
+        string executable = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;
+        var entry = ProgramCatalog.FromPath("\"" + executable + "\",0", "Test program", "test");
+        Assert(entry != null && entry.Name == "Test program" && entry.Executable == executable, "app discovery parses quoted DisplayIcon executable paths");
+        Assert(ProgramCatalog.FromPath(executable + " --argument", "bad", "test") == null, "app discovery does not execute or misinterpret command lines");
+    }
+    private static void ClickOwnWindow(Form form, Point point)
+    {
+        Control hit = Control.FromChildHandle(WindowFromPoint(point));
+        Assert(hit != null && hit.FindForm() == form, "test click stays on the intended TinyTodo window");
+        Point saved = Cursor.Position;
+        try { Cursor.Position = point; mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero); mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero); PumpFor(80); }
+        finally { Cursor.Position = saved; }
+    }
+    private static void VerifyBottomScrollbar(ScrollSurface surface, string screenshot)
+    {
+        Point saved = Cursor.Position;
+        try
+        {
+            surface.SetPosition(0); PumpFor(40);
+            var bar = surface.Scrollbar;
+            Rectangle thumb = (Rectangle)typeof(ThinScroll).GetProperty("Thumb", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(bar, null);
+            Point start = bar.PointToScreen(new Point(thumb.Left + thumb.Width / 2, thumb.Top + thumb.Height / 2));
+            Assert(Control.FromChildHandle(WindowFromPoint(start)) == bar, "real scrollbar drag starts on its own thumb");
+            Cursor.Position = start; mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero); PumpFor(40);
+            Cursor.Position = bar.PointToScreen(new Point(thumb.Left + thumb.Width / 2, bar.Height - Ui.U(2))); PumpFor(60);
+            mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero); PumpFor(60);
+            Assert(surface.Position == bar.Maximum, "dragging scrollbar reaches the page bottom");
+            thumb = (Rectangle)typeof(ThinScroll).GetProperty("Thumb", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(bar, null);
+            Point cap = bar.PointToScreen(new Point(thumb.Left + thumb.Width / 2, thumb.Bottom - 1));
+            Assert(Control.FromChildHandle(WindowFromPoint(cap)) == bar, "dragged bottom cap remains visible above resize grip");
+            string folder = Environment.GetEnvironmentVariable("TINYTODO_CAPTURE_DIR");
+            if (!String.IsNullOrEmpty(folder))
+                using (var bitmap = new Bitmap(Ui.U(50), Ui.U(70))) using (var graphics = Graphics.FromImage(bitmap))
+                { graphics.CopyFromScreen(new Point(cap.X - Ui.U(25), cap.Y - Ui.U(50)), Point.Empty, bitmap.Size); bitmap.Save(Path.Combine(folder, screenshot + ".png")); }
+        }
+        finally { mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero); Cursor.Position = saved; }
+    }
+    private static void VerifyPreviewTreeWheel(TaskPreview preview, ScrollSurface page, TaskGraph graph)
+    {
+        Point saved = Cursor.Position;
+        int opened = 0, toggled = 0; graph.OpenTask = delegate { opened++; }; graph.ToggleTask = delegate { toggled++; };
+        try
+        {
+            page.SetPosition(page.Scrollbar.Maximum); graph.ResetView(); preview.Activate(); PumpFor(60);
+            Rectangle visible = Rectangle.Intersect(graph.RectangleToScreen(graph.ClientRectangle), page.RectangleToScreen(page.ClientRectangle));
+            Point point = new Point(visible.Left + Ui.U(30), visible.Top + visible.Height / 2);
+            Assert(Control.FromChildHandle(WindowFromPoint(point)) == graph, "real tree wheel stays on the preview canvas");
+            Cursor.Position = point; float zoom = graph.Zoom; int position = page.Position;
+            mouse_event(0x0800, 0, 0, 120, UIntPtr.Zero); PumpFor(80);
+            Assert(page.Position < position && graph.Zoom == zoom, "plain wheel on canvas scrolls preview without zooming");
+            mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero); PumpFor(40); position = page.Position;
+            mouse_event(0x0800, 0, 0, 120, UIntPtr.Zero); PumpFor(80);
+            Assert(graph.Zoom > zoom && page.Position == position, "left-held wheel zooms tree without scrolling page");
+            mouse_event(0x0800, 0, 0, unchecked((uint)-120), UIntPtr.Zero); PumpFor(80);
+            Assert(Math.Abs(graph.Zoom - zoom) < .001F && page.Position == position, "left-held downward wheel zooms back without page motion");
+            mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero); PumpFor(40);
+            mouse_event(0x0800, 0, 0, 120, UIntPtr.Zero); PumpFor(80);
+            Assert(page.Position < position && Math.Abs(graph.Zoom - zoom) < .001F, "releasing left button immediately restores page scrolling");
+            page.SetPosition(page.Scrollbar.Maximum); graph.ResetView(); PumpFor(40);
+            var node = graph.LayoutData.Nodes[graph.CurrentId];
+            Point check = Point.Round(graph.ToScreen(new PointF(node.Bounds.Left + 19, node.Bounds.Top + 21)));
+            Point checkScreen = graph.PointToScreen(check);
+            Assert(Control.FromChildHandle(WindowFromPoint(checkScreen)) == graph, "checkbox zoom gesture stays on the preview canvas");
+            Cursor.Position = checkScreen; mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero); PumpFor(40);
+            mouse_event(0x0800, 0, 0, 120, UIntPtr.Zero); PumpFor(60);
+            mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero); PumpFor(40);
+            Assert(toggled == 0 && opened == 0, "releasing after wheel zoom never checks or opens the task under pointer");
+        }
+        finally { mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero); Cursor.Position = saved; }
+    }
+    private static void VerifyTaskSelection()
+    {
+        using (var host = new AppWindow())
+        using (var table = new TaskTable { Dock = DockStyle.None })
+        {
+            host.StartPosition = FormStartPosition.Manual; host.Location = Screen.PrimaryScreen.WorkingArea.Location;
+            host.ClientSize = new Size(Ui.U(700), Ui.U(500));
+            table.SetBounds(Ui.U(12), Ui.U(120), Ui.U(660), Ui.U(300)); host.Controls.Add(table);
+            var blank = new Label { Text = "Click outside task", Bounds = new Rectangle(Ui.U(20), Ui.U(60), Ui.U(240), Ui.U(40)) };
+            int actions = 0; var action = Ui.Button("Other action", delegate { actions++; }); action.SetBounds(Ui.U(320), Ui.U(60), Ui.U(140), Ui.U(40));
+            host.Controls.Add(blank); host.Controls.Add(action);
+            var first = new Todo { Name = "Selected task" }; var second = new Todo { Name = "Another task" };
+            var state = new State(); state.Tasks.AddRange(new[] { first, second }); table.ShowTasks(state, state.Tasks, false);
+            host.Show(); host.Activate(); PumpFor(80);
+            Action<int> clickRow = row => { Rectangle cell = table.CellBounds(1, row); ClickOwnWindow(host, table.PointToScreen(new Point(cell.Left + cell.Width / 2, cell.Top + cell.Height / 2))); };
+            clickRow(0); Assert(table.SelectedId == first.Id, "click task selects its bold border");
+            clickRow(0); Assert(table.SelectedId == first.Id, "click same task keeps its bold border selected");
+            clickRow(1); Assert(table.SelectedId == second.Id, "click another task transfers selected border");
+            ClickOwnWindow(host, table.PointToScreen(new Point(Ui.U(80), table.ColumnHeadersHeight + table.RowHeight * 2 + Ui.U(20))));
+            Assert(table.SelectedId == null, "click empty list area clears selected border");
+            clickRow(0); ClickOwnWindow(host, table.PointToScreen(new Point(Ui.U(80), table.ColumnHeadersHeight + table.RowHeight)));
+            Assert(table.SelectedId == null, "click visible gap between task cards clears selected border");
+            clickRow(0); ClickOwnWindow(host, table.PointToScreen(new Point(table.Sizing.Width[0] + Ui.U(20), Ui.U(12))));
+            Assert(table.SelectedId == null, "click table header clears selected border");
+            clickRow(0); ClickOwnWindow(host, blank.PointToScreen(new Point(Ui.U(20), Ui.U(20))));
+            Assert(table.SelectedId == null, "click nonfocusable label clears selected border");
+            clickRow(0); ClickOwnWindow(host, action.PointToScreen(new Point(action.Width / 2, action.Height / 2)));
+            Assert(table.SelectedId == null && actions == 1, "outside action clears selection without consuming its click");
+            clickRow(0); Mouse(table, "OnMouseLeave", MouseButtons.None, 0, 0);
+            Assert(table.SelectedId == first.Id, "moving pointer away without clicking preserves selected border");
+            using (var other = new AppWindow())
+            {
+                other.StartPosition = FormStartPosition.Manual; other.Location = host.Location + new Size(Ui.U(30), Ui.U(30));
+                other.ClientSize = new Size(Ui.U(300), Ui.U(180));
+                var label = new Label { Text = "Other page", Bounds = new Rectangle(Ui.U(15), Ui.U(60), Ui.U(200), Ui.U(50)) }; other.Controls.Add(label);
+                other.Show(); other.Activate(); PumpFor(50);
+                ClickOwnWindow(other, label.PointToScreen(new Point(Ui.U(20), Ui.U(20))));
+                Assert(table.SelectedId == null, "click another TinyTodo page clears previous task selection");
+            }
+        }
+    }
+    private static void AssertPreviewCanvas(TaskGraph graph, string reason)
+    {
+        RectangleF node = graph.LayoutData.Nodes[graph.CurrentId].Bounds;
+        PointF top = graph.ToScreen(node.Location), bottom = graph.ToScreen(new PointF(node.Right, node.Bottom));
+        RectangleF shown = RectangleF.FromLTRB(top.X, top.Y, bottom.X, bottom.Y);
+        RectangleF viewport = graph.CanvasViewport; viewport.Inflate(1, 1);
+        Assert(viewport.Contains(shown), reason + ": focused node is fully inside the visible canvas");
+        Assert(Math.Abs((top.X + bottom.X) / 2 - graph.CanvasCenter.X) <= 1 && Math.Abs((top.Y + bottom.Y) / 2 - graph.CanvasCenter.Y) <= 1,
+            reason + ": focused node is centered below the canvas tools");
+        Point center = graph.PointToScreen(graph.CanvasCenter);
+        Assert(Control.FromChildHandle(WindowFromPoint(center)) == graph, reason + ": focused node is visible on screen");
+    }
+    private static void VerifyPreviewCanvas(string folder)
+    {
+        var store = new Store(Path.Combine(folder, "preview-canvas.json")); store.Load();
+        var focus = new Todo { Name = "Probability 主课: Harvard Stat 110, Joe Blitzstein", Description = "Harvard Stat 110" };
+        store.Change(state => { state.Tasks.Add(focus); for (int i = 0; i < 18; i++) state.Tasks.Add(new Todo { Name = "Other task " + i }); });
+        using (var preview = new TaskPreview(store, focus.Id))
+        {
+            preview.Show(); preview.Activate(); preview.ClientSize = new Size(Ui.U(450), Ui.U(620)); PumpFor(80);
+            var views = Descendants(preview).OfType<TaskViews>().Single();
+            var page = Descendants(preview).OfType<ScrollSurface>().Single();
+            views.SelectView(2); PumpFor(120);
+            AssertPreviewCanvas(views.Graph, "enter tree with short description");
+            float initialZoom = views.Graph.Zoom;
+            Assert(initialZoom <= 1 && initialZoom >= .55F, "unrelated tasks do not shrink preview focus to an unreadable overview");
+            views.Graph.ZoomAt(2, new Point(12, 15)); views.LocateCurrent(); PumpFor(60);
+            AssertPreviewCanvas(views.Graph, "reset after pan and zoom");
+            Assert(Math.Abs(views.Graph.Zoom - initialZoom) < .001F, "preview reset restores the fitted initial zoom");
+            preview.ClientSize = new Size(Ui.U(430), Ui.U(520)); PumpFor(100);
+            AssertPreviewCanvas(views.Graph, "resize preview");
+            views.SelectView(0); page.SetPosition(0); views.SelectView(2); PumpFor(100);
+            AssertPreviewCanvas(views.Graph, "reenter tree after scrolling");
+            var treeTab = Descendants(views).OfType<Button>().Single(button => button.Text == "树形");
+            Point tabCenter = treeTab.PointToScreen(new Point(treeTab.Width / 2, treeTab.Height / 2));
+            Assert(Control.FromChildHandle(WindowFromPoint(tabCenter)) == treeTab, "revealing tree keeps its navigation tabs visible");
+            string captures = Environment.GetEnvironmentVariable("TINYTODO_CAPTURE_DIR");
+            if (!String.IsNullOrEmpty(captures))
+                using (var bitmap = new Bitmap(preview.Width, preview.Height)) using (var graphics = Graphics.FromImage(bitmap))
+                { graphics.CopyFromScreen(preview.Location, Point.Empty, preview.Size); bitmap.Save(Path.Combine(captures, "preview-fitted-canvas-screen.png")); }
+        }
+    }
+    private static void VerifySessionWindowSizes(string folder)
+    {
+        var sizes = (System.Collections.IDictionary)typeof(AppWindow).GetField("sessionSizes", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
+        sizes.Clear();
+        var store = new Store(Path.Combine(folder, "session-sizes.json")); store.Load();
+        var task = new Todo { Name = "窗口大小测试" }; var other = new Todo { Name = "另一项任务" };
+        store.Change(state => state.Tasks.AddRange(new[] { task, other }));
+        var factories = new Func<AppWindow>[] {
+            () => new SettingsForm(store, new DataLocations(folder)),
+            () => new TaskPreview(store, task.Id),
+            () => new TaskEditor(store, task),
+            () => new TaskEditor(store, null),
+            () => new TaskEditor(store, null, task.Id, true),
+            () => new TaskEditor(store, null, task.Id, false)
+        };
+        try
+        {
+            foreach (var create in factories)
+            {
+                Size remembered; string caption;
+                using (var initial = create())
+                {
+                    Size defaultSize = initial.ClientSize;
+                    initial.StartPosition = FormStartPosition.Manual; initial.Location = Screen.PrimaryScreen.WorkingArea.Location;
+                    Ui.Fit(initial); defaultSize = initial.ClientSize;
+                    initial.Show(); PumpFor(60); caption = initial.Text;
+                    Assert(initial.ClientSize == defaultSize, "different page kind keeps its default size: " + caption);
+                    Send(initial.Handle, 0x231, IntPtr.Zero, IntPtr.Zero);
+                    initial.ClientSize = new Size(initial.ClientSize.Width - Ui.U(32), initial.ClientSize.Height - Ui.U(40));
+                    Send(initial.Handle, 0x232, IntPtr.Zero, IntPtr.Zero); PumpFor(50); remembered = initial.ClientSize;
+                    Assert(remembered != defaultSize, "native resize cycle changes page size: " + caption);
+                    initial.Close();
+                }
+                using (var reopened = create())
+                {
+                    reopened.Show(); PumpFor(60);
+                    Assert(reopened.ClientSize == remembered, "same page kind reopens at remembered size: " + caption);
+                    reopened.WindowState = FormWindowState.Minimized; PumpFor(20); reopened.WindowState = FormWindowState.Normal; PumpFor(30);
+                    Assert(reopened.ClientSize == remembered, "minimizing preserves normal page size: " + caption);
+                    reopened.Close();
+                }
+            }
+            Size previewSize = (Size)sizes[typeof(TaskPreview).FullName];
+            using (var another = new TaskPreview(store, other.Id))
+            {
+                another.Show(); PumpFor(60);
+                Assert(another.ClientSize == previewSize, "preview of a different task shares preview window size");
+                another.Close();
+            }
+            using (var probe = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Application.ExecutablePath, "--size-memory-probe") { UseShellExecute = false, CreateNoWindow = true }))
+            {
+                Assert(probe.WaitForExit(5000) && probe.ExitCode == 0, "fresh application process starts with no remembered window sizes");
+            }
+        }
+        finally { sizes.Clear(); }
+    }
+    private static void VerifyPageInteractions(string folder)
+    {
+        var store = new Store(Path.Combine(folder, "page-interactions.json")); store.Load();
+        var task = new Todo { Name = String.Concat(Enumerable.Repeat("这是一个需要完整换行显示的长任务标题", 6)), Description = String.Join("\n", Enumerable.Range(1, 28).Select(i => i % 5 == 0 ? "## Markdown 标题 " + i : "第 " + i + " 行说明：长内容应该随整个页面上下滚动。")), Important = true };
+        store.Change(s => { for (int i = 0; i < 28; i++) { var prerequisite = new Todo { Name = "前置任务 " + i }; s.Tasks.Add(prerequisite); task.Prerequisites.Add(prerequisite.Id); } s.Tasks.Add(task); for (int i = 0; i < 23; i++) s.Tasks.Add(new Todo { Name = "后续任务 " + i, Prerequisites = new List<string> { task.Id } }); });
+        using (var main = new MainForm(store, new DataLocations(folder)))
+        {
+            main.Show(); main.Location = Screen.PrimaryScreen.WorkingArea.Location + new Size(Ui.U(20), Ui.U(20)); main.Activate(); PumpFor(60);
+            var editor = TaskWindows.Edit(store, main, null); editor.Location = main.Location + new Size(Ui.U(18), Ui.U(18)); PumpFor(100);
+            var date = Descendants(editor).OfType<DateInput>().Single();
+            var calendarButton = Descendants(date).OfType<IconButton>().Single(b => b.Kind == Glyph.Down);
+            for (int i = 0; i < 5; i++)
+            {
+                calendarButton.PerformClick(); PumpFor(35);
+                var popup = Application.OpenForms.Cast<Form>().OfType<TransientPopup>().Single();
+                Assert(popup.Owner == editor, "calendar remembers editor as owning page");
+                ClickOwnWindow(editor, editor.PointToScreen(new Point(Ui.U(10), Ui.U(54))));
+                Assert(popup.IsDisposed && DesktopActivity.GetForegroundWindow() == editor.Handle && editor.Visible, "cancel calendar by clicking page restores editor, not overlapping main");
+            }
+            calendarButton.PerformClick(); PumpFor(30); var escapeCalendar = Application.OpenForms.Cast<Form>().OfType<TransientPopup>().Single();
+            Key(escapeCalendar, Keys.Escape); PumpFor(60);
+            Assert(escapeCalendar.IsDisposed && DesktopActivity.GetForegroundWindow() == editor.Handle, "calendar Escape returns to editor");
+            calendarButton.PerformClick(); PumpFor(30); var overlapCalendar = Application.OpenForms.Cast<Form>().OfType<TransientPopup>().Single();
+            main.Activate(); PumpFor(70);
+            Assert(overlapCalendar.IsDisposed && DesktopActivity.GetForegroundWindow() == editor.Handle, "dismissal cannot promote overlapping main above calendar's owning page");
+            editor.Close(); main.OpenSettings(); var settings = TaskWindows.Find<SettingsForm>(store, f => true); settings.Location = main.Location + new Size(Ui.U(18), Ui.U(18)); PumpFor(100);
+            var label = Descendants(settings).OfType<Label>().Single(l => l.Text == "猫猫默认显示规则");
+            Assert(settings.Mode.Left > label.Right && Math.Abs((settings.Mode.Top + settings.Mode.Height / 2.0) - (label.Top + label.Height / 2.0)) <= Ui.U(1), "cat rule label and selector share one vertically centered row");
+            Assert(!Descendants(settings).OfType<Label>().Any(l => l.Text.Contains("全屏隐藏只影响")), "removed redundant fullscreen explanatory sentence");
+            var save = Descendants(settings).OfType<Button>().Single(b => b.Text == "保存");
+            var migrate = Descendants(settings).OfType<Button>().Single(b => b.Text == "选择位置并迁移");
+            Assert(save.Parent.Padding.Top == Ui.U(6) && ScrollSurface.Ancestor(save) == null, "settings actions reserve the reduced 6 DIP fixed gap above Save and Cancel");
+            object previousMode = settings.Mode.SelectedItem;
+            for (int i = 0; i < 5; i++)
+            {
+                settings.Mode.PerformClick(); PumpFor(35); var popup = Application.OpenForms.Cast<Form>().OfType<TransientPopup>().Single();
+                ClickOwnWindow(settings, settings.PointToScreen(new Point(Ui.U(10), Ui.U(54))));
+                Assert(popup.IsDisposed && DesktopActivity.GetForegroundWindow() == settings.Handle && settings.Mode.SelectedItem == previousMode, "cancel rule picker returns to Settings without changing choice");
+            }
+            settings.Mode.PerformClick(); PumpFor(35); var escapePicker = Application.OpenForms.Cast<Form>().OfType<TransientPopup>().Single();
+            Key(escapePicker, Keys.Escape); PumpFor(70);
+            Assert(escapePicker.IsDisposed && DesktopActivity.GetForegroundWindow() == settings.Handle, "rule picker Escape returns to Settings");
+            Capture(settings, "settings-inline-rule");
+            for (int i = 0; i < 30; i++) settings.AddBlacklist(new ProgramEntry { Name = "应用 " + i, Executable = "program" + i + ".exe" });
+            settings.ClientSize = new Size(Ui.U(610), Ui.U(350)); PumpFor(80);
+            var surface = Descendants(settings).OfType<ScrollSurface>().Single();
+            Assert(surface.Scrollbar.Maximum > 0, "short Settings window scrolls as a whole page");
+            Rectangle fixedSave = save.RectangleToScreen(save.ClientRectangle);
+            surface.SetPosition(surface.Scrollbar.Maximum); int bottom = surface.Position;
+            Assert(save.RectangleToScreen(save.ClientRectangle) == fixedSave && settings.ClientRectangle.Contains(settings.PointToClient(new Point(fixedSave.Right - 1, fixedSave.Bottom - 1))), "settings Save stays visible and fixed while content scrolls to bottom");
+            for (int i = 0; i < 30; i++) { surface.ScrollWheel(-120); settings.PerformLayout(); }
+            Assert(surface.Position == bottom && surface.Scrollbar.Maximum == bottom, "repeated bottom wheel events do not grow content or move the lower limit");
+            surface.ScrollWheel(30); Assert(surface.Position < bottom, "small upward wheel delta immediately moves page away from bottom");
+            surface.SetPosition(bottom);
+            var inner = (IWheelTarget)settings.Blacklist;
+            while (inner.CanScrollWheel(120)) inner.ScrollWheel(120);
+            surface.RouteWheel(settings.Blacklist, 120);
+            Assert(surface.Position < bottom, "wheel at top of inner list continues upward through outer page");
+            while (inner.CanScrollWheel(-120)) inner.ScrollWheel(-120);
+            int before = surface.Position; surface.RouteWheel(settings.Blacklist, 120);
+            Assert(surface.Position == before && inner.CanScrollWheel(-120), "scrollable inner list consumes wheel once without moving outer page");
+            while (inner.CanScrollWheel(-120)) inner.ScrollWheel(-120);
+            surface.SetPosition(0); surface.RouteWheel(settings.Blacklist, -120);
+            Assert(surface.Position > 0, "wheel at bottom of inner list continues through outer page");
+            surface.SetPosition(bottom);
+            Rectangle thumb = (Rectangle)typeof(ThinScroll).GetProperty("Thumb", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(surface.Scrollbar, null);
+            Point thumbCorner = settings.PointToClient(surface.Scrollbar.PointToScreen(new Point(thumb.Right - 1, thumb.Bottom - 1)));
+            Assert(thumb.Bottom < surface.Scrollbar.Height && settings.Region.IsVisible(thumbCorner), "bottom thumb stays fully inside rounded window edge");
+            Point capPoint = surface.Scrollbar.PointToScreen(new Point(thumb.Left + thumb.Width / 2, thumb.Bottom - 1));
+            Assert(Control.FromChildHandle(WindowFromPoint(capPoint)) == surface.Scrollbar, "bottom scrollbar cap is not covered by the window resize grip");
+            VerifyBottomScrollbar(surface, "settings-bottom-cap-screen");
+            Capture(settings, "settings-scroll-bottom"); settings.Close();
+            var preview = TaskWindows.Preview(store, main, task.Id); preview.Size = preview.MinimumSize; PumpFor(140);
+            var page = Descendants(preview).OfType<PreviewLayout>().Single(); var previewScroll = Descendants(preview).OfType<ScrollSurface>().Single();
+            var title = Descendants(preview).OfType<TextBox>().Single(t => t.Font.SizeInPoints == 14F);
+            int titleLines = title.GetLineFromCharIndex(title.TextLength) + 1;
+            Assert(titleLines >= 2 && title.Height >= titleLines * title.Font.Height, "long preview title displays every wrapped line without clipping");
+            var views = Descendants(preview).OfType<TaskViews>().Single();
+            Assert(previewScroll.WholePageWheel && views.First.VisibleRows >= views.First.Rows.Count, "prerequisite list expands fully and uses page scrolling");
+            var markdown = Descendants(preview).OfType<MarkdownView>().Single(); var viewport = Descendants(preview).OfType<TextViewport>().Single(); viewport.Sync();
+            Assert(viewport.Scrollbar.Maximum == 0 && markdown.Height >= viewport.NaturalHeight - viewport.Padding.Vertical - Ui.U(8), "Markdown expands into page instead of clipping or nested scrolling");
+            Assert(markdown.Text.StartsWith("第 1 行") && markdown.GetPositionFromCharIndex(0).Y >= 0 && markdown.GetPositionFromCharIndex(0).Y < Ui.U(20), "expanded Markdown keeps the first line at the top");
+            Console.WriteLine("Expanded Markdown bounds=" + markdown.Bounds + " position=" + viewport.Position + " natural=" + viewport.NaturalHeight + " page=" + page.Height);
+            Capture(preview, "preview-long-title");
+            string captureFolder = Environment.GetEnvironmentVariable("TINYTODO_CAPTURE_DIR");
+            if (!String.IsNullOrEmpty(captureFolder))
+            {
+                preview.BringToFront(); preview.Activate(); PumpFor(80);
+                using (var bitmap = new Bitmap(preview.Width, preview.Height)) using (var graphics = Graphics.FromImage(bitmap))
+                { graphics.CopyFromScreen(preview.Location, Point.Empty, preview.Size); bitmap.Save(Path.Combine(captureFolder, "preview-long-title-screen.png")); }
+            }
+            var fixedActions = Descendants(preview).OfType<PreviewActionBar>().Single();
+            Rectangle fixedHeader = fixedActions.RectangleToScreen(fixedActions.ClientRectangle);
+            previewScroll.SetPosition(previewScroll.Scrollbar.Maximum); int pageBottom = previewScroll.Position;
+            Assert(fixedActions.RectangleToScreen(fixedActions.ClientRectangle) == fixedHeader && fixedActions.Top == 0 && ScrollSurface.Ancestor(fixedActions) == null,
+                "preview actions stay fixed directly below window caption while page scrolls");
+            foreach (Button action in Descendants(fixedActions).OfType<Button>())
+            {
+                Point center = action.PointToScreen(new Point(action.Width / 2, action.Height / 2));
+                Assert(Control.FromChildHandle(WindowFromPoint(center)) == action, "fixed preview action remains visible and clickable: " + action.Text);
+            }
+            Capture(preview, "preview-fixed-actions-bottom");
+            previewScroll.RouteWheel(views.First, 120); Assert(previewScroll.Position < pageBottom, "wheel over prerequisite rows scrolls the whole preview upward");
+            int firstPosition = (int)typeof(TaskTable).GetField("first", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(views.First);
+            Assert(firstPosition == 0, "whole-page wheel never independently offsets relation rows");
+            views.SelectView(1); PumpFor(100);
+            Assert(views.Second.VisibleRows >= views.Second.Rows.Count, "successor list also expands fully");
+            views.SelectView(2); PumpFor(100);
+            Assert(views.Graph.Height >= Ui.U(400), "tree retains generous height independent of title and Markdown length");
+            previewScroll.SetPosition(previewScroll.Scrollbar.Maximum); Capture(preview, "preview-tree-page");
+            VerifyBottomScrollbar(previewScroll, "preview-bottom-cap-screen");
+            VerifyPreviewTreeWheel(preview, previewScroll, views.Graph);
+            for (int i = 0; i < 25; i++) { previewScroll.ScrollWheel(120); previewScroll.ScrollWheel(-120); preview.PerformLayout(); }
+            int stableMaximum = previewScroll.Scrollbar.Maximum; PumpFor(200);
+            Assert(previewScroll.Scrollbar.Maximum == stableMaximum, "preview scroll range is stable after alternating wheel input");
+            preview.Close();
+        }
+    }
+    private static void VerifyProgramPicker(string folder)
+    {
+        var store = new Store(Path.Combine(folder, "program-picker.json")); store.Load();
+        using (var settings = new SettingsForm(store, new DataLocations(folder)))
         {
             settings.Show(); Application.DoEvents();
-            Assert(settings.Mode.SelectedIndex == 1, "fullscreen hiding is the default setting");
+            Descendants(settings).OfType<Button>().Single(b => b.Text == "选择程序…").PerformClick(); Application.DoEvents();
+            var picker = TaskWindows.Find<ProgramPicker>(store, f => true);
+            Assert(picker != null && !picker.Modal && settings.Enabled, "program picker leaves first-level settings enabled");
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            while (watch.ElapsedMilliseconds < 30000 && !Descendants(picker).OfType<Label>().Any(l => l.Text.Contains("找不到时"))) PumpFor(50);
+            var entries = (System.Collections.Generic.List<ProgramEntry>)typeof(ProgramPicker).GetField("entries", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(picker);
+            Assert(entries.Count > 0 && entries.Any(e => e.Source.Contains("开始菜单") || e.Source.Contains("已安装")), "app discovery returns registered applications on this computer");
+            Console.WriteLine("Discovered " + entries.Count + " applications; Store entries: " + entries.Count(e => e.Source.Contains("Microsoft Store")));
+            Assert(entries.Any(e => e.Source.Contains("Microsoft Store")), "app discovery includes Microsoft Store applications on this computer");
+            var list = Descendants(picker).OfType<ProgramChecklist>().Single();
+            var search = Descendants(picker).OfType<TextBox>().Single(t => t.AccessibleName == "搜索应用名或程序名");
+            search.Text = entries[0].Key.ToUpperInvariant(); Application.DoEvents();
+            var visible = (System.Collections.Generic.List<ProgramEntry>)typeof(ProgramChecklist).GetField("rows", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(list);
+            Assert(visible.Any(e => e.Key == entries[0].Key), "program search matches executable names without case sensitivity");
+            var chosen = visible[0]; list.Pick(0);
+            Assert(settings.BlacklistKeys.Contains(chosen.Key), "picking discovered application checks it in blacklist");
+            Capture(picker, "program-picker"); Capture(settings, "settings-blacklist");
+            search.Text = "no-matching-app-" + Guid.NewGuid().ToString("N"); Application.DoEvents();
+            visible = (System.Collections.Generic.List<ProgramEntry>)typeof(ProgramChecklist).GetField("rows", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(list);
+            Assert(visible.Count == 0 && settings.BlacklistKeys.Contains(chosen.Key), "search text filters choices without editing blacklist");
+            settings.RemoveBlacklist(chosen.Key); PumpFor(560);
+            var blacklistRows = (System.Collections.Generic.List<ProgramEntry>)typeof(ProgramChecklist).GetField("rows", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(settings.Blacklist);
+            Assert(blacklistRows.Count == 0, "unticked blacklist row disappears after visual feedback");
+            settings.Close(); Assert(picker.IsDisposed, "closing settings also closes its program picker");
+        }
+    }
+    private static void VerifyCatSettings(Store store)
+    {
+        using (var settings = new SettingsForm(store, new DataLocations(Path.GetDirectoryName(store.PathName))))
+        {
+            settings.Show(); Application.DoEvents();
+            Assert(settings.Mode.Items.IndexOf(settings.Mode.SelectedItem) == 1, "fullscreen hiding is the default setting");
             Capture(settings, "floating-settings");
-            settings.Mode.SelectedIndex = 0; settings.Blacklist.Text = "Code.exe\r\nWOW.exe";
+            settings.Mode.Commit(settings.Mode.Items[0]); settings.AddBlacklist(new ProgramEntry { Name = "Visual Studio Code", Executable = "Code.exe" }); settings.AddBlacklist(new ProgramEntry { Name = "World of Warcraft", Executable = "WOW.exe" });
             Assert(settings.SaveSettings(), "floating settings save successfully");
         }
         var saved = Store.Read(store.PathName);
         Assert(saved.Window.CatMode == CatVisibilityMode.Hidden && saved.Window.CatBlacklist.SequenceEqual(new string[] { "Code", "WOW" }), "settings dialog persists selected default and blacklist");
-        using (var settings = new FloatingSettingsForm(store))
+        using (var settings = new SettingsForm(store, new DataLocations(Path.GetDirectoryName(store.PathName))))
         {
-            Assert(settings.Mode.SelectedIndex == 0 && settings.Blacklist.Text.Contains("WOW.exe"), "reopening settings restores saved controls");
-            settings.Mode.SelectedIndex = 2; settings.Blacklist.Text = ""; settings.Close();
+            Assert(settings.Mode.Items.IndexOf(settings.Mode.SelectedItem) == 0 && settings.BlacklistKeys.Contains("WOW"), "reopening settings restores saved controls");
+            settings.Mode.Commit(settings.Mode.Items[2]); settings.RemoveBlacklist("WOW"); settings.Close();
         }
         Assert(store.Current.Window.CatMode == CatVisibilityMode.Hidden && store.Current.Window.CatBlacklist.Count == 2, "cancelled settings leave saved preferences intact");
         store.Change(s => { s.Window.CatBlacklist.Clear(); s.Window.CatMode = CatVisibilityMode.HideFullscreen; });
         using (var main = new MainForm(store, new DataLocations(Path.GetDirectoryName(store.PathName))))
         {
-            main.Show(); Application.DoEvents();
+            main.Show(); main.Activate(); Application.DoEvents();
             var bubble = (FloatingIcon)typeof(MainForm).GetField("bubble", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main);
             var menu = (ContextMenuStrip)typeof(MainForm).GetField("menu", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main);
             var toggle = Descendants(main).OfType<FloatingSwitch>().Single();
@@ -540,7 +967,7 @@ internal static class UiTests
     {
         using (var main = new MainForm(store, new DataLocations(Path.GetDirectoryName(store.PathName))))
         {
-            main.Show(); Application.DoEvents();
+            main.Show(); main.Activate(); Application.DoEvents();
             var tray = (NotifyIcon)typeof(MainForm).GetField("tray", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main);
             var menu = (ContextMenuStrip)typeof(MainForm).GetField("menu", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main);
             var mouseUp = typeof(NotifyIcon).GetMethod("OnMouseUp", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -586,15 +1013,15 @@ internal static class UiTests
         store.Change(s => s.Tasks.AddRange(new Todo[] { first, second, third }));
         using (var main = new MainForm(store, new DataLocations(folder)))
         {
-            main.Show(); Application.DoEvents(); var table = Descendants(main).OfType<TaskTable>().Single();
+            main.Show(); main.Activate(); Application.DoEvents(); var table = Descendants(main).OfType<TaskTable>().Single();
             int blockedRow = table.Rows.FindIndex(r => r.Task.Id == third.Id);
             using (var dismiss = new Timer { Interval = 40 })
             {
                 dismiss.Tick += delegate
                 {
-                    foreach (Form form in Application.OpenForms.Cast<Form>().Where(f => f.Owner == main && f.Modal).ToArray()) form.Close();
+                    foreach (Form form in Application.OpenForms.Cast<Form>().Where(f => f.GetType() == typeof(AppWindow) && f.Text == "TinyTodo").ToArray()) form.Close();
                 };
-                dismiss.Start(); ClickCell(table, 0, blockedRow); dismiss.Stop();
+                dismiss.Start(); ClickCell(table, 0, blockedRow); PumpFor(100); dismiss.Stop();
             }
             Assert(!Rules.Get(store.Current, third.Id).Done && !table.HasCompletionFeedback(third.Id) && table.Rows.Count == 3,
                 "blocked completion keeps task unchanged without a success effect");
@@ -627,7 +1054,7 @@ internal static class UiTests
         using (var main = new MainForm(store, new DataLocations(Path.GetDirectoryName(store.PathName))))
         using (var editor = new TaskEditor(store, null))
         {
-            main.Show(); Application.DoEvents();
+            main.Show(); main.Activate(); Application.DoEvents();
             var views = Descendants(main).OfType<TaskViews>().Single();
             var mode = Descendants(main).OfType<FloatingSwitch>().Single();
             int toggles = 0, opens = 0;
@@ -661,9 +1088,16 @@ internal static class UiTests
         store.Change(s => s.Window.Floating = true);
         using (var main = new MainForm(store, new DataLocations(Path.GetDirectoryName(store.PathName))))
         {
-            main.Show(); Application.DoEvents();
+            main.Show(); main.Activate(); PumpFor(300);
             var startupBubble = (FloatingIcon)typeof(MainForm).GetField("bubble", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main);
-            Assert(main.Visible && startupBubble.Visible && !main.TopMost, "floating startup shows both task window and floating entry without pinning");
+            Assert(main.Visible && startupBubble.Visible && main.TopMost, "floating startup shows both task window and floating entry with persistent pinning");
+            var preview = TaskWindows.Preview(store, main, store.Current.Tasks.First().Id);
+            var draftEditor = TaskWindows.Edit(store, preview, preview.CurrentId);
+            var draftName = Descendants(draftEditor).OfType<TextBox>().Single(t => t.MaxLength == 120); draftName.Text = "Fullscreen draft";
+            Point mainPosition = main.Location, previewPosition = preview.Location, editorPosition = draftEditor.Location;
+            PumpFor(80);
+            Descendants(Descendants(draftEditor).OfType<DateInput>().Single()).OfType<IconButton>().Single(b => b.Kind == Glyph.Down).PerformClick(); PumpFor(40);
+            var departingPopup = Application.OpenForms.Cast<Form>().OfType<TransientPopup>().Single();
             string ready = Path.Combine(Path.GetDirectoryName(store.PathName), "input-probe-ready.txt");
             using (var probe = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Application.ExecutablePath,
                 "--input-probe \"" + ready + "\"") { UseShellExecute = false, CreateNoWindow = true }))
@@ -681,6 +1115,8 @@ internal static class UiTests
                     { Application.DoEvents(); System.Threading.Thread.Sleep(10); }
                     Assert(DesktopActivity.GetForegroundWindow() == foreground && !DesktopActivity.OwnsForeground,
                         "test input window belongs to another foreground process");
+                    WaitUntil(() => departingPopup.IsDisposed, "calendar completes its deferred close after external activation");
+                    Assert(departingPopup.IsDisposed && DesktopActivity.GetForegroundWindow() == foreground, "dismissing calendar into another application does not reactivate its page");
                     uint processId; uint threadId = GetWindowThreadProcessId(foreground, out processId);
                     IntPtr layout = GetKeyboardLayout(threadId);
                     main.UpdateDesktopVisibility(true); main.UpdateDesktopVisibility(false);
@@ -690,8 +1126,23 @@ internal static class UiTests
                         Application.DoEvents(); System.Threading.Thread.Sleep(10);
                         stable &= DesktopActivity.GetForegroundWindow() == foreground && GetKeyboardLayout(threadId) == layout;
                     }
-                    Assert(stable && main.Visible && !main.TopMost && startupBubble.Visible && (DesktopActivity.GetWindowLong(startupBubble.Handle, -20) & 8) != 0,
+                    Assert(stable && main.Visible && main.TopMost && startupBubble.Visible && (DesktopActivity.GetWindowLong(startupBubble.Handle, -20) & 8) != 0,
                         "ordinary external app leaves cat visible/topmost while preserving foreground and keyboard layout");
+                    Rectangle screen = Screen.FromControl(main).Bounds;
+                    SetWindowPos(foreground, IntPtr.Zero, screen.X, screen.Y, screen.Width, screen.Height, 0x0010 | 0x0004);
+                    PumpFor(600);
+                    Assert(!main.Visible && !preview.Visible && !draftEditor.Visible && !startupBubble.Visible,
+                        "actual external fullscreen hides main, preview, editor and cat on the same screen");
+                    Assert(DesktopActivity.GetForegroundWindow() == foreground && GetKeyboardLayout(threadId) == layout,
+                        "entering fullscreen preserves external foreground and input language");
+                    SetWindowPos(foreground, IntPtr.Zero, screen.X + 30, screen.Y + 30, 320, 100, 0x0010 | 0x0004);
+                    PumpFor(600);
+                    Assert(main.Visible && preview.Visible && draftEditor.Visible && startupBubble.Visible && draftName.Text == "Fullscreen draft",
+                        "leaving external fullscreen restores all windows and unsaved draft");
+                    Assert(main.Location == mainPosition && preview.Location == previewPosition && draftEditor.Location == editorPosition,
+                        "fullscreen round trip preserves all window positions");
+                    Assert(DesktopActivity.GetForegroundWindow() == foreground && GetKeyboardLayout(threadId) == layout,
+                        "automatic window restoration does not steal external focus or change input language");
                 }
                 finally
                 {
@@ -715,15 +1166,21 @@ internal static class UiTests
     {
         // Background shells may not grant foreground activation. Click only our own
         // verified test surface once; the production app never sends synthetic input.
-        using (var surface = new Form { Text = "TinyTodo UI verification", StartPosition = FormStartPosition.CenterScreen, Size = new Size(320, 120), TopMost = true })
+        using (var surface = new Form { Text = "TinyTodo UI verification", StartPosition = FormStartPosition.CenterScreen, ClientSize = new Size(320, 120), TopMost = true })
         {
+            surface.StartPosition = FormStartPosition.Manual; surface.Location = Screen.PrimaryScreen.WorkingArea.Location + new Size(80, 80);
             surface.Show(); surface.Activate(); Application.DoEvents();
+            TaskWindows.ShowPassive(surface);
+            SetWindowPos(surface.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x53); Application.DoEvents();
             {
                 Point previous = Cursor.Position;
                 try
                 {
-                    Point target = surface.PointToScreen(new Point(40, 40)); Cursor.Position = target;
-                    if (WindowFromPoint(target) != surface.Handle) throw new Exception("Test surface is obscured; refusing to click another application.");
+                    Point target = surface.PointToScreen(new Point(surface.ClientSize.Width / 2, surface.ClientSize.Height / 2)); Cursor.Position = target;
+                    var ready = System.Diagnostics.Stopwatch.StartNew();
+                    while (WindowFromPoint(target) != surface.Handle && ready.ElapsedMilliseconds < 3000)
+                    { surface.BringToFront(); surface.Activate(); PumpFor(100); }
+                    if (WindowFromPoint(target) != surface.Handle) { uint otherPid; GetWindowThreadProcessId(WindowFromPoint(target), out otherPid); throw new Exception("Test surface is obscured; refusing to click another application. Surface=" + surface.Handle + " hit=" + WindowFromPoint(target) + " process=" + otherPid + " point=" + target + " cursor=" + Cursor.Position + " bounds=" + surface.Bounds + " visible=" + surface.Visible + " state=" + surface.WindowState); }
                     mouse_event(2, 0, 0, 0, UIntPtr.Zero); mouse_event(4, 0, 0, 0, UIntPtr.Zero);
                     Application.DoEvents(); surface.Activate();
                 }
@@ -741,10 +1198,12 @@ internal static class UiTests
             while (!File.Exists(args[1]) && watch.ElapsedMilliseconds < 8000) System.Threading.Thread.Sleep(20);
             return 0;
         }
+        if (args.Length == 1 && args[0] == "--size-memory-probe")
+            return ((System.Collections.IDictionary)typeof(AppWindow).GetField("sessionSizes", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null)).Count == 0 ? 0 : 1;
         Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
         if (args.Length == 2 && args[0] == "--input-probe")
         {
-            using (var probe = new Form { Text = "TinyTodo isolated input test", ClientSize = new Size(320, 100) })
+            using (var probe = new Form { Text = "TinyTodo isolated input test", ClientSize = new Size(320, 100), FormBorderStyle = FormBorderStyle.None })
             {
                 var edit = new TextBox { Dock = DockStyle.Fill, Multiline = true }; probe.Controls.Add(edit);
                 probe.Shown += delegate { edit.Focus(); File.WriteAllText(args[1], probe.Handle.ToInt64().ToString()); };
@@ -773,13 +1232,16 @@ internal static class UiTests
             var c = new Todo { Name = "间接后续 C" }; c.Prerequisites.Add(b.Id);
             var d = new Todo { Name = "共享后续 D" }; d.Prerequisites.Add(a.Id); d.Prerequisites.Add(b.Id);
             store.Change(s => s.Tasks.AddRange(new Todo[] { a, b, c, d }));
+            if (Environment.GetEnvironmentVariable("TINYTODO_SELECTION_ONLY") == "1") { VerifyTaskSelection(); return 0; }
             if (Environment.GetEnvironmentVariable("TINYTODO_HOVER_ONLY") == "1") { VerifyHoverPersistence(); VerifyHover(); return 0; }
+            if (Environment.GetEnvironmentVariable("TINYTODO_PAGE_ONLY") == "1") { VerifyPageInteractions(temp); VerifySessionWindowSizes(temp); VerifyPreviewCanvas(temp); return 0; }
+            if (Environment.GetEnvironmentVariable("TINYTODO_PROGRAMS_ONLY") == "1") { VerifyProgramPicker(temp); return 0; }
             if (Environment.GetEnvironmentVariable("TINYTODO_INPUT_ONLY") == "1") { VerifyInputIsolation(store); return 0; }
             if (Environment.GetEnvironmentVariable("TINYTODO_TRAY_ONLY") == "1") { VerifyTrayMenu(store); return 0; }
-            if (Environment.GetEnvironmentVariable("TINYTODO_WINDOW_ONLY") == "1") { VerifyWindowRecovery(store); VerifyCatSettings(store); return 0; }
+            if (Environment.GetEnvironmentVariable("TINYTODO_WINDOW_ONLY") == "1") { VerifyWindowRecovery(store); VerifyCatSettings(store); VerifyModeless(temp); return 0; }
             using (var main = new MainForm(store, locations))
             {
-                main.Show(); Application.DoEvents();
+                main.Show(); main.Activate(); Application.DoEvents();
                 Assert(main.FormBorderStyle == FormBorderStyle.None && main.Padding.Top == main.CaptionHeight, "custom caption reserves its own client area");
                 Assert(main.EdgeHit(new Point(1, main.Height / 2)) == 10 && main.EdgeHit(new Point(main.Width - 1, main.Height - 1)) == 17, "borderless resize hit zones preserve edges and corners");
                 Assert(Descendants(main).OfType<Button>().Any(x => x.AccessibleName == "关闭") && Descendants(main).OfType<Button>().Any(x => x.AccessibleName == "最小化"), "integrated caption buttons available");
@@ -863,9 +1325,12 @@ internal static class UiTests
                         editorMarkdown = Descendants(editor).OfType<MarkdownView>().Any(x => x.Text.Contains("关键") && !x.Text.Contains("**"));
                         editor.DialogResult = DialogResult.Cancel; editor.Close();
                     };
-                    cancelEditor.Start(); popup.Items.OfType<ToolStripMenuItem>().First(x => x.Text == "编辑").PerformClick(); popup.Close(); Application.DoEvents();
+                    cancelEditor.Start(); popup.Items.OfType<ToolStripMenuItem>().First(x => x.Text == "编辑").PerformClick(); popup.Close(); PumpFor(150);
                 }
                 Assert(editorSeen && editorCorrect && editorMarkdown && Rules.Get(store.Current, a.Id).Description == a.Description, "popup edit opens correct task, renders Markdown and cancel leaves source intact");
+                // Closing an independent editor can return foreground to an external fullscreen app.
+                // Resume this test's main-window interaction explicitly, as a tray click would.
+                TaskWindows.Present(main, null); PumpFor(60);
                 popup = TaskActions.Menu(main, grid, new Point(20, 20), store, a.Id, delegate { Descendants(main).OfType<Button>().First(x => x.Text.StartsWith("待办")).PerformClick(); });
                 var flagAction = popup.Items.OfType<ToolStripMenuItem>().First(x => x.Text == "设为" && x.AccessibleName == "设为重要标记");
                 Assert(flagAction.Image != null && flagAction.TextImageRelation == TextImageRelation.TextBeforeImage, "important menu uses the shared icon after its label");
@@ -894,6 +1359,8 @@ internal static class UiTests
                 WaitUntil(() => !grid.HasCompletionFeedback(a.Id), "completion fade finishes");
                 Assert(grid.Rows.Count == 3 && grid.Rows.All(r => r.Task.Id != a.Id), "completed row leaves active list after feedback");
                 Descendants(main).OfType<Button>().First(x => x.Text.StartsWith("历史")).PerformClick(); Application.DoEvents();
+                if (grid.Rows.Count != 1 || grid.Rows[0].Task.Id != a.Id)
+                    Console.WriteLine("History switch diagnostic: visible=" + main.Visible + " enabled=" + main.Enabled + " foreground=" + DesktopActivity.OwnsForeground + " title=" + main.Text + " rows=" + grid.Rows.Count);
                 Assert(grid.Rows.Count == 1 && grid.Rows[0].Task.Id == a.Id, "history contains completed task");
                 Assert(!views.Eye.Visible, "history list hides eye");
                 views.SelectView(2);
@@ -986,12 +1453,12 @@ internal static class UiTests
                 Assert(views.First.Rows[1].Task.Important, "related list carries important marker");
                 Assert(views.First.Rows.Count == 2 && views.First.Rows[1].Task.Id == a.Id, "prerequisites contain plus row and direct relation only");
                 Assert(views.Second.Rows.Count == 3 && views.Second.Rows.Skip(1).All(r => r.Task.Id == c.Id || r.Task.Id == d.Id), "successors contain only the two direct relations");
-                views.SelectView(2); views.Graph.ZoomAt(2F, new Point(20, 30)); views.LocateCurrent(); Capture(preview, "preview-tree");
-                Assert(views.Graph.Zoom == 1F, "preview reset restores initial zoom");
+                views.SelectView(2); views.Graph.ZoomAt(2F, new Point(20, 30)); views.LocateCurrent(); PumpFor(80); Capture(preview, "preview-tree");
+                Assert(views.Graph.Zoom >= .2F && views.Graph.Zoom <= 1F, "preview reset fits current canvas at a readable zoom");
                 Assert(views.Eye.Visible, "preview tree shows eye");
                 var rect = views.Graph.LayoutData.Nodes[b.Id].Bounds;
                 PointF center = views.Graph.ToScreen(new PointF(rect.X + rect.Width / 2, rect.Y + rect.Height / 2));
-                Assert(Math.Abs(center.X - views.Graph.Width / 2F) < 1 && Math.Abs(center.Y - views.Graph.Height / 2F) < 1, "preview tracking centers current task");
+                Assert(Math.Abs(center.X - views.Graph.CanvasCenter.X) < 1 && Math.Abs(center.Y - views.Graph.CanvasCenter.Y) < 1, "preview tracking centers current task in the visible canvas");
                 views.SelectView(0); ClickCell(views.First, 1, 1);
                 Assert(preview.CurrentId == b.Id && !views.Eye.Visible, "relation single click stays in current preview and list hides eye");
                 DoubleClickCell(views.First, 1, 1);
@@ -1062,7 +1529,7 @@ internal static class UiTests
                 Assert(opened == null, "drag selection does not open a link");
                 Assert(!editor.Preview.ActivateLink(editor.Preview.Text.IndexOf("unsafe")), "non-web schemes cannot launch from Markdown");
             }
-            VerifyHoverPersistence(); VerifyHover(); VerifyStableScrolling(); VerifyRefinement(store); VerifyWindowRecovery(store); VerifyCatSettings(store); VerifyTrayMenu(store); VerifyInputIsolation(store); VerifyCompletionFeedback(temp);
+            VerifyHoverPersistence(); VerifyHover(); VerifyStableScrolling(); VerifyRefinement(store); VerifyWindowRecovery(store); VerifyCatSettings(store); VerifyTrayMenu(store); VerifyInputIsolation(store); VerifyCompletionFeedback(temp); VerifyModeless(temp); VerifyPageInteractions(temp); VerifySessionWindowSizes(temp); VerifyPreviewCanvas(temp); VerifyTaskSelection();
             using (var toggle = new FloatingSwitch())
             {
                 bool mode = false; toggle.Changed = value => { mode = value; toggle.IsFloating = value; };

@@ -143,6 +143,15 @@ namespace TinyTodo
             f.Location = new Point(Math.Max(area.Left, Math.Min(f.Left, area.Right - f.Width)),
                 Math.Max(area.Top, Math.Min(f.Top, area.Bottom - f.Height)));
         }
+        internal static void FixedPage(Form form, Control content, Control actions, bool actionsAtTop)
+        {
+            var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            layout.RowStyles.Add(actionsAtTop ? Auto() : Fill()); layout.RowStyles.Add(actionsAtTop ? Fill() : Auto());
+            content.Margin = actions.Margin = Padding.Empty; content.Dock = actions.Dock = DockStyle.Fill;
+            layout.Controls.Add(actions, 0, actionsAtTop ? 0 : 1); layout.Controls.Add(content, 0, actionsAtTop ? 1 : 0);
+            form.Controls.Add(layout);
+        }
         internal static void ScrollRoot(Form form, TableLayoutPanel root, int minimumHeight)
         {
             form.Controls.Add(new ScrollSurface(root, U(minimumHeight)));
@@ -223,6 +232,7 @@ namespace TinyTodo
     internal sealed class MainForm : AppWindow
     {
         private readonly Store store;
+        private readonly DataLocations locations;
         private readonly NotifyIcon tray;
         private readonly ContextMenuStrip menu;
         private readonly FloatingIcon bubble;
@@ -247,8 +257,8 @@ namespace TinyTodo
         private DateTime today = DateTime.Today;
         public MainForm(Store store, DataLocations locations)
         {
-            this.store = store;
-            Ui.Setup(this, "TinyTodo 3.5.6", 720, 500);
+            this.store = store; this.locations = locations;
+            Ui.Setup(this, "TinyTodo 3.5.7", 720, 500);
             StartPosition = FormStartPosition.Manual;
             appIcon = MakeIcon(); Icon = appIcon;
             var root = Ui.Root(Ui.Auto(), Ui.Fill(), Ui.Auto());
@@ -258,7 +268,7 @@ namespace TinyTodo
             foreach (SoftButton tab in new Button[] { currentButton, historyButton }) { tab.IndexTab = true; tab.Margin = new Padding(Ui.U(1), Ui.U(3), Ui.U(1), 0); }
             floatingButton = AddFloatingSwitch(value => ToggleFloating());
             AddCaptionAction(Glyph.Settings, "设置", delegate
-            { using (var settings = new SettingsForm(store, locations, delegate { manualCatVisibility = null; ApplyFloating(); })) { settings.TopMost = TopMost; settings.ShowDialog(this); } });
+            { OpenSettings(); });
             var addButton = new AddTaskButton(); addButton.Click += delegate { Add(); };
             top.LeftItems.AddRange(new Control[] { currentButton, historyButton, addButton });
             views = new TaskViews(false) { Margin = new Padding(3, 0, 3, 3) }; grid = views.First; top.SetNavigation(views.DetachNavigation());
@@ -294,19 +304,14 @@ namespace TinyTodo
             menu.Items.Add("展开任务表", null, delegate { ShowMain(); });
             menu.Items.Add("添加任务", null, delegate { ShowMain(); Add(); });
             catMenuItem = menu.Items.Add("收起猫猫", null, delegate { ToggleFloating(); });
-            menu.Items.Add("完成历史", null, delegate { SwitchHistory(true); ShowMain(false); });
-            menu.Items.Add("打开数据文件夹", null, delegate
-            {
-                try { string dir = Path.GetDirectoryName(store.PathName); Directory.CreateDirectory(dir); Process.Start(new ProcessStartInfo(dir) { UseShellExecute = true }); }
-                catch (Exception ex) { Error(ex); }
-            });
+            menu.Items.Add("设置", null, delegate { BeginInvoke(new Action(OpenSettings)); });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("退出", null, delegate { exiting = true; Close(); });
             menu.Opening += delegate { RefreshCatControls(); desktopMenuOpen = true; };
             menu.Closed += delegate { desktopMenuOpen = false; };
             // The tray release must finish before the popup takes foreground ownership.
             trayIcon = MakeTrayIcon();
-            tray = new NotifyIcon { Icon = trayIcon, Text = "TinyTodo 3.5.6", Visible = true };
+            tray = new NotifyIcon { Icon = trayIcon, Text = "TinyTodo 3.5.7", Visible = true };
             tray.MouseUp += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Right) QueueTrayMenu(Cursor.Position); };
             tray.MouseClick += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) ShowMain(); };
             bubble = new FloatingIcon(ToggleFromBubble, SaveIconPosition, menu);
@@ -318,7 +323,7 @@ namespace TinyTodo
             ResizeEnd += delegate { SavePosition(); };
             Resize += delegate { if (WindowState == FormWindowState.Minimized) Collapse(); };
             FormClosing += delegate(object sender, FormClosingEventArgs e)
-            { SavePosition(); if (!exiting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } };
+            { SavePosition(); if (!exiting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; TaskWindows.ForgetAutomaticHide(this); Hide(); } };
             KeyPreview = true;
             KeyDown += delegate(object sender, KeyEventArgs e)
             {
@@ -328,6 +333,8 @@ namespace TinyTodo
             timer = new System.Windows.Forms.Timer { Interval = 250 };
             timer.Tick += delegate { UpdateDesktopVisibility(DesktopActivity.ShouldYieldOn(Screen.FromControl(bubble).Bounds)); UpdateClock(); if (today != DateTime.Today) { today = DateTime.Today; Render(); } };
             Microsoft.Win32.SystemEvents.TimeChanged += SystemTimeChanged;
+            timer.Tick += delegate { TaskWindows.UpdateLayers(); };
+            TaskWindows.Watch(store, this, Render);
             timer.Start(); SelectClock(); UpdateClock(); Render();
         }
         [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hwnd);
@@ -418,6 +425,7 @@ namespace TinyTodo
         }
         private void ShowMain(bool resetView = true)
         {
+            TaskWindows.ForgetAutomaticHide(this);
             Form dialog = ActiveDialog();
             if (dialog != this)
             {
@@ -428,7 +436,7 @@ namespace TinyTodo
             WindowState = FormWindowState.Normal;
             Show(); WindowState = FormWindowState.Normal; Ui.Fit(this); BringToFront(); Activate();
         }
-        private void Collapse() { SavePosition(); Hide(); }
+        private void Collapse() { TaskWindows.ForgetAutomaticHide(this); SavePosition(); Hide(); }
         private void ApplyFloating()
         {
             // The tray remains the entry point regardless of cat visibility.
@@ -489,7 +497,9 @@ namespace TinyTodo
             {
                 try
                 {
-                    store.Change(s => { if (Rules.Get(s, id).Done) Rules.Restore(s, id); else Rules.Complete(s, id); });
+                    Action<State> change = s => { if (Rules.Get(s, id).Done) Rules.Restore(s, id); else Rules.Complete(s, id); };
+                    if (!TaskWindows.CanChange(store, change, this)) return;
+                    store.Change(change);
                     views.ShowCompletionFeedback(store.Current, id); Render();
                 }
                 catch (Exception ex) { Error(ex); Render(); }
@@ -503,13 +513,19 @@ namespace TinyTodo
             previewQueued = true;
             BeginInvoke(new Action(delegate
             {
-                try { using (var preview = new TaskPreview(store, id)) { preview.TopMost = TopMost; preview.ShowDialog(this); } Render(); }
+                try { if (store.Current.Tasks.Any(t => t.Id == id)) TaskWindows.Preview(store, this, id); }
                 finally { previewQueued = false; }
             }));
         }
         private void Add()
         {
-            using (var editor = new TaskEditor(store, null)) { editor.TopMost = TopMost; if (editor.ShowDialog(this) == DialogResult.OK) Render(); }
+            TaskWindows.Edit(store, this, null);
+        }
+        internal void OpenSettings()
+        {
+            var settings = TaskWindows.Find<SettingsForm>(store, f => true);
+            if (settings != null) { TaskWindows.Present(settings, this); return; }
+            TaskWindows.Show(store, new SettingsForm(store, locations, delegate { manualCatVisibility = null; ApplyFloating(); }), this);
         }
         private void ShowTaskMenu(Control source, string id, Point point)
         {
@@ -523,15 +539,16 @@ namespace TinyTodo
             currentButton.Text = "待办 " + s.Tasks.Count(t => !t.Done); historyButton.Text = "历史 " + s.Tasks.Count(t => t.Done);
             ((SoftButton)currentButton).SelectedTab = !history; currentButton.Invalidate();
             ((SoftButton)historyButton).SelectedTab = history; historyButton.Invalidate();
-            Text = history ? "TinyTodo 3.5 · 历史" : "TinyTodo 3.5.6";
+            Text = history ? "TinyTodo 3.5.7 · 历史" : "TinyTodo 3.5.7";
         }
         private bool Change(Action<State> action)
         { try { store.Change(action); Render(); return true; } catch (Exception ex) { Error(ex); return false; } }
-        private void Error(Exception ex) { ThemedDialog.Show(this, ex.Message, "TinyTodo", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+        private void Error(Exception ex) { ThemedDialog.Notify(this, ex.Message, "TinyTodo", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
         protected override void Dispose(bool disposing)
         {
             if (disposing)
             {
+                TaskWindows.CloseAll(store);
                 if (timer != null) timer.Dispose(); if (bubble != null) bubble.Dispose();
                 Microsoft.Win32.SystemEvents.TimeChanged -= SystemTimeChanged;
                 if (tray != null) { tray.Visible = false; tray.Dispose(); }
@@ -577,6 +594,8 @@ namespace TinyTodo
             if (Visible && (DesktopActivity.GetWindowLong(Handle, -20) & 8) == 0)
                 SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0010 | 0x0001 | 0x0002 | 0x0200);
         }
+        protected override void SetVisibleCore(bool value)
+        { if (value) TaskWindows.ShowPassive(this); else base.SetVisibleCore(false); }
         protected override bool ShowWithoutActivation { get { return true; } }
         protected override CreateParams CreateParams
         { get { var cp = base.CreateParams; cp.ExStyle |= 0x08000000 | 0x00000080; return cp; } }

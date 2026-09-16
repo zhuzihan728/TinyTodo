@@ -35,7 +35,7 @@ namespace TinyTodo
     }
 
     // Entirely owner drawn: no native grid windows, cell borders or focus rectangles.
-    internal sealed class TaskTable : Control
+    internal sealed class TaskTable : Control, IWheelTarget, IMessageFilter
     {
         internal sealed class Row
         {
@@ -86,6 +86,7 @@ namespace TinyTodo
                 Math.Max(Measure("等待 99 项"), Measure("已完成")) + padding);
             completionTimer.Tick += delegate { AdvanceCompletionFeedback(); };
             scroll.BackColor = BackColor; Controls.Add(scroll);
+            Application.AddMessageFilter(this);
             AddRowButton.AutoSize = false; AddRowButton.Font = Font;
             AddRowButton.BackColor = Color.White; AddRowButton.ForeColor = Theme.Ink;
             AddRowButton.Cursor = Cursors.Hand; AddRowButton.Visible = false;
@@ -202,10 +203,39 @@ namespace TinyTodo
             int row = first + (y - ColumnHeadersHeight) / RowHeight;
             return row < Rows.Count ? row : -1;
         }
+        private RectangleF CardBounds(int row)
+        {
+            float gap = Math.Max(1, RowHeight * .05F);
+            return new RectangleF(Ui.U(2), ColumnHeadersHeight + (row - first) * RowHeight + gap / 2 + Ui.U(1), AvailableWidth - Ui.U(4), RowHeight - gap - Ui.U(2));
+        }
+        private int RowAtPoint(Point point)
+        {
+            int row = ColumnAt(point.X) < 0 ? -1 : RowAt(point.Y);
+            return row < 0 || (Rows[row].Task != null && !CardBounds(row).Contains(point)) ? -1 : row;
+        }
+        private void ClearSelection()
+        { if (selected < 0) return; selected = -1; Invalidate(); }
+        public bool PreFilterMessage(ref Message message)
+        {
+            if (selected < 0 || IsDisposed || !IsHandleCreated) return false;
+            int kind = message.Msg;
+            bool client = kind == 0x201 || kind == 0x204 || kind == 0x207 || kind == 0x20B;
+            bool caption = kind == 0xA1 || kind == 0xA4 || kind == 0xA7 || kind == 0xAB;
+            if (!client && !caption) return false;
+            if (!client || message.HWnd != Handle) ClearSelection();
+            else
+            {
+                long location = message.LParam.ToInt64();
+                if (RowAtPoint(new Point((short)(location & 0xffff), (short)((location >> 16) & 0xffff))) != selected) ClearSelection();
+            }
+            // Observe only this UI thread's clicks; never consume or redirect the input.
+            return false;
+        }
         protected override void OnMouseDown(MouseEventArgs e)
         {
-            base.OnMouseDown(e); Focus(); hoverPreview.Hide(); downRow = RowAt(e.Y); downColumn = ColumnAt(e.X); downClicks = e.Clicks; downCheck = downRow >= 0 && CheckBounds(downRow).Contains(e.Location);
+            base.OnMouseDown(e); Focus(); hoverPreview.Hide(); downRow = RowAtPoint(e.Location); downColumn = ColumnAt(e.X); downClicks = e.Clicks; downCheck = downRow >= 0 && CheckBounds(downRow).Contains(e.Location);
             downTaskId = downRow < 0 || Rows[downRow].Task == null ? null : Rows[downRow].Task.Id;
+            if (downRow != selected || downColumn < 0) ClearSelection();
             if (e.Button == MouseButtons.Left && (divider = DividerAt(e.Location)) >= 0)
             { lastX = e.X; Capture = true; return; }
         }
@@ -223,7 +253,7 @@ namespace TinyTodo
         {
             base.OnMouseUp(e);
             if (divider >= 0) { divider = -1; Capture = false; return; }
-            int row = RowAt(e.Y);
+            int row = RowAtPoint(e.Location);
             string upTaskId = row < 0 || Rows[row].Task == null ? null : Rows[row].Task.Id;
             if (downRow == row && downColumn == ColumnAt(e.X) && downTaskId == upTaskId) ActivateAt(e.Location, e.Button, downClicks);
         }
@@ -238,7 +268,7 @@ namespace TinyTodo
                 { dateMenu.Items[0].Text = countdown ? "显示日期" : "显示倒计时"; dateMenu.Show(this, p); }
                 return;
             }
-            int row = RowAt(p.Y); if (row < 0) return;
+            int row = RowAtPoint(p); if (row < 0) return;
             selected = row; Invalidate(); string id = SelectedId;
             if (HasCompletionFeedback(id)) return;
             if (button == MouseButtons.Right) { if (id != null && TaskMenu != null) TaskMenu(id, p); return; }
@@ -249,12 +279,14 @@ namespace TinyTodo
         }
         protected override void OnMouseCaptureChanged(EventArgs e) { base.OnMouseCaptureChanged(e); if (!Capture) { divider = -1; Invalidate(); } }
         protected override void OnMouseLeave(EventArgs e) { hoverId = null; Invalidate(); hoverPreview.Leave(); base.OnMouseLeave(e); }
+        bool IWheelTarget.CanScrollWheel(int delta) { return delta > 0 ? first > 0 : first < scroll.Maximum; }
+        void IWheelTarget.ScrollWheel(int delta) { OnMouseWheel(new HandledMouseEventArgs(MouseButtons.None, 0, 0, 0, delta)); }
         protected override void OnMouseWheel(MouseEventArgs e)
         {
-            hoverPreview.Hide(); wheelRemainder += e.Delta;
-            int steps = wheelRemainder / 120; wheelRemainder %= 120;
+            var handled = e as HandledMouseEventArgs; if (handled != null) handled.Handled = true;
+            hoverPreview.Hide(); int steps = WheelInput.Steps(ref wheelRemainder, e.Delta);
             int lines = SystemInformation.MouseWheelScrollLines;
-            first -= steps * (lines < 0 ? VisibleRows : lines); SyncScroll(); Invalidate(); base.OnMouseWheel(e);
+            first -= steps * (lines < 0 ? VisibleRows : lines); SyncScroll(); Invalidate();
         }
         protected override bool IsInputKey(Keys keyData)
         {
@@ -299,7 +331,7 @@ namespace TinyTodo
             for (int i = first; i < Math.Min(Rows.Count, first + VisibleRows + 1); i++)
             {
                 Row row = Rows[i]; Todo task = row.Task;
-                var r = new RectangleF(Ui.U(2), ColumnHeadersHeight + (i - first) * RowHeight + gap / 2 + Ui.U(1), AvailableWidth - Ui.U(4), RowHeight - gap - Ui.U(2));
+                var r = CardBounds(i);
                 if (r.Width <= 0) continue;
                 if (task == null) continue; // Drawn by the shared SoftButton child.
                 Theme.TaskCard(g, r, task.Done, i == selected, Ui.Scale);
@@ -331,7 +363,7 @@ namespace TinyTodo
             TextRenderer.DrawText(g, text, Theme.Font(9.5F, FontStyle.Regular, text), bounds, color,
                 TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.PreserveGraphicsClipping | (center ? TextFormatFlags.HorizontalCenter : TextFormatFlags.Left));
         }
-        protected override void Dispose(bool disposing) { if (disposing) { completionTimer.Dispose(); dateMenu.Dispose(); hoverPreview.Dispose(); } base.Dispose(disposing); }
+        protected override void Dispose(bool disposing) { if (disposing) { Application.RemoveMessageFilter(this); completionTimer.Dispose(); dateMenu.Dispose(); hoverPreview.Dispose(); } base.Dispose(disposing); }
     }
     internal sealed class GraphNode
     {
@@ -378,6 +410,71 @@ namespace TinyTodo
         internal GraphLayout LayoutData;
         internal string CurrentId, SelectedId;
         internal float Zoom = 1F;
+        internal bool FitPreview;
+        internal int ToolbarBottom;
+        private bool fitQueued, revealForFit;
+        internal RectangleF CanvasViewport
+        {
+            get
+            {
+                Rectangle visible = ClientRectangle;
+                var page = ScrollSurface.Ancestor(this);
+                if (page != null && IsHandleCreated && page.IsHandleCreated)
+                    visible.Intersect(RectangleToClient(page.RectangleToScreen(page.ClientRectangle)));
+                int top = Math.Max(visible.Top, ToolbarBottom);
+                return RectangleF.FromLTRB(visible.Left + Ui.U(16), top + Ui.U(16), Math.Max(visible.Left + Ui.U(16), visible.Right - Ui.U(16)), Math.Max(top + Ui.U(16), visible.Bottom - Ui.U(16)));
+            }
+        }
+        internal Point CanvasCenter
+        { get { var r = FitPreview ? CanvasViewport : ClientRectangle; return Point.Round(new PointF(r.Left + r.Width / 2, r.Top + r.Height / 2)); } }
+        private void QueuePreviewFit(bool reveal)
+        {
+            if (!FitPreview || IsDisposed) return;
+            revealForFit |= reveal;
+            if (fitQueued || !IsHandleCreated || !Visible) return;
+            fitQueued = true;
+            BeginInvoke(new Action(delegate
+            {
+                fitQueued = false; if (IsDisposed || !Visible) return;
+                var page = ScrollSurface.Ancestor(this); if (page != null) page.PerformLayout();
+                bool show = revealForFit; revealForFit = false; FitPreviewCanvas(show);
+            }));
+        }
+        private void FitPreviewCanvas(bool reveal)
+        {
+            if (LayoutData == null || LayoutData.Nodes.Count == 0 || ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
+            var page = ScrollSurface.Ancestor(this);
+            if (reveal && page != null && CanvasViewport.Height < Ui.U(180))
+            {
+                // A long description can put the canvas below the page: reveal it on entry/reset only.
+                Control section = this;
+                for (Control parent = Parent; parent != null && parent != page; parent = parent.Parent)
+                    if (parent is TaskViews) { section = parent; break; }
+                Rectangle canvas = page.RectangleToClient(section.RectangleToScreen(section.ClientRectangle));
+                page.SetPosition(page.Position + canvas.Top - Ui.U(8));
+            }
+            RectangleF viewport = CanvasViewport;
+            if (viewport.Width <= 0 || viewport.Height <= 0) return;
+            GraphNode node;
+            RectangleF focus = CurrentId != null && LayoutData.Nodes.TryGetValue(CurrentId, out node) ? node.Bounds : LayoutData.Bounds;
+            PointF center = new PointF(focus.Left + focus.Width / 2, focus.Top + focus.Height / 2);
+            RectangleF context = focus;
+            foreach (var edge in LayoutData.Edges)
+            {
+                string neighbor = edge.Item1 == CurrentId ? edge.Item2 : edge.Item2 == CurrentId ? edge.Item1 : null;
+                if (neighbor != null) context = RectangleF.Union(context, LayoutData.Nodes[neighbor].Bounds);
+            }
+            float width = Math.Max(focus.Width * 2F, 2F * Math.Max(center.X - context.Left, context.Right - center.X));
+            float height = Math.Max(focus.Height * 2F, 2F * Math.Max(center.Y - context.Top, context.Bottom - center.Y));
+            float fit = Math.Min(viewport.Width / (width * Ui.Scale), viewport.Height / (height * Ui.Scale));
+            // Keep dense neighborhoods readable; users can zoom out further when needed.
+            Zoom = Math.Min(1F, Math.Max(.55F, fit));
+            Zoom = Math.Min(Zoom, Math.Min(viewport.Width / (focus.Width * Ui.Scale), viewport.Height / (focus.Height * Ui.Scale)));
+            Zoom = Math.Max(.2F, Zoom);
+            offset = new PointF(viewport.Left + viewport.Width / 2 - center.X * Zoom * Ui.Scale, viewport.Top + viewport.Height / 2 - center.Y * Zoom * Ui.Scale);
+            placed = true; Invalidate();
+        }
+
         private PointF offset;
         private Point down, last;
         private Size previousSize;
@@ -394,11 +491,11 @@ namespace TinyTodo
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
         }
         internal void ShowTasks(State s, bool showDone, string current, bool center)
-        { countdown = s.Window.DateCountdown; CurrentId = current; LayoutData = new GraphLayout(s, showDone); if (center || !placed) CenterCurrent(); Invalidate(); }
+        { countdown = s.Window.DateCountdown; CurrentId = current; LayoutData = new GraphLayout(s, showDone); if (center || !placed) { if (FitPreview) QueuePreviewFit(true); else CenterCurrent(); } Invalidate(); }
         internal PointF ToScreen(PointF p) { float z = Zoom * Ui.Scale; return new PointF(p.X * z + offset.X, p.Y * z + offset.Y); }
         private PointF World(Point p) { float z = Zoom * Ui.Scale; return new PointF((p.X - offset.X) / z, (p.Y - offset.Y) / z); }
         internal void ResetView()
-        { Zoom = 1F; CenterCurrent(); }
+        { if (FitPreview) { var page = ScrollSurface.Ancestor(this); if (page != null) page.PerformLayout(); FitPreviewCanvas(true); } else { Zoom = 1F; CenterCurrent(); } }
         internal void CenterCurrent()
         {
             if (LayoutData == null || ClientSize.Width == 0 || ClientSize.Height == 0) return;
@@ -414,11 +511,12 @@ namespace TinyTodo
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
-            if (!placed) CenterCurrent();
+            if (FitPreview) QueuePreviewFit(false);
+            else if (!placed) CenterCurrent();
             else { offset.X += (ClientSize.Width - previousSize.Width) / 2F; offset.Y += (ClientSize.Height - previousSize.Height) / 2F; }
             previousSize = ClientSize; Invalidate();
         }
-        protected override void OnVisibleChanged(EventArgs e) { base.OnVisibleChanged(e); if (Visible && !placed) CenterCurrent(); }
+        protected override void OnVisibleChanged(EventArgs e) { base.OnVisibleChanged(e); if (Visible) { if (FitPreview) QueuePreviewFit(true); else if (!placed) CenterCurrent(); } }
         private GraphNode Hit(Point p)
         { if (LayoutData == null) return null; PointF w = World(p); return LayoutData.Nodes.Values.FirstOrDefault(n => n.Bounds.Contains(w)); }
         protected override void OnPaint(PaintEventArgs e)
@@ -544,7 +642,21 @@ namespace TinyTodo
         private bool CheckHit(GraphNode node, Point point)
         { return new RectangleF(node.Bounds.X + 12, node.Bounds.Y + 14, 14, 14).Contains(World(point)); }
         protected override void OnMouseCaptureChanged(EventArgs e) { base.OnMouseCaptureChanged(e); if (!Capture) dragging = false; }
-        protected override void OnMouseWheel(MouseEventArgs e) { base.OnMouseWheel(e); ZoomAt((float)Math.Pow(1.15, e.Delta / 120.0), e.Location); }
+        internal void ZoomWheel(int delta, Point anchor)
+        {
+            if (delta == 0) return;
+            tip.Hide();
+            // A wheel gesture must not become a checkbox click or double-click on release.
+            if (dragging) { moved = true; last = anchor; }
+            ZoomAt((float)Math.Pow(1.15, delta / 120.0), anchor);
+        }
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            var handled = e as HandledMouseEventArgs; if (handled != null) handled.Handled = true;
+            var page = ScrollSurface.Ancestor(this);
+            if (page != null) page.RouteWheel(this, e.Delta);
+            else ZoomWheel(e.Delta, e.Location);
+        }
         protected override bool IsInputKey(Keys keyData)
         { Keys key = keyData & Keys.KeyCode; return key == Keys.Left || key == Keys.Right || key == Keys.Up || key == Keys.Down || base.IsInputKey(keyData); }
         protected override void OnKeyDown(KeyEventArgs e)
@@ -613,7 +725,7 @@ namespace TinyTodo
                 Size nav = StripSize(navigation), tool = StripSize(tools);
                 int height = detached ? 0 : nav.Height + (preview ? Ui.ViewTabGap : 0);
                 if (!detached) navigation.SetBounds(0, 0, nav.Width, nav.Height);
-                if (Graph != null) tools.SetBounds(Math.Max(0, Graph.ClientSize.Width - tool.Width - Ui.U(8)), Ui.U(8), tool.Width, tool.Height);
+                if (Graph != null) { tools.SetBounds(Math.Max(0, Graph.ClientSize.Width - tool.Width - Ui.U(8)), Ui.U(8), tool.Width, tool.Height); Graph.ToolbarBottom = tools.Bottom; }
                 tools.BringToFront();
                 layout.RowStyles[0].SizeType = SizeType.Absolute;
                 if (layout.RowStyles[0].Height != height) layout.RowStyles[0].Height = height;
@@ -626,6 +738,15 @@ namespace TinyTodo
         private State state;
         private string current;
         internal int Mode { get; private set; }
+        internal int PageContentHeight
+        {
+            get
+            {
+                TaskTable table = Mode == 1 && Second != null ? Second : First;
+                int bodyHeight = Mode == 2 ? Ui.U(420) : Math.Max(Ui.U(190), table.ColumnHeadersHeight + table.Rows.Count * table.RowHeight + Ui.U(12));
+                return bodyHeight + StripSize(navigation).Height + Ui.ViewTabGap + Ui.U(12);
+            }
+        }
         internal bool ShowDone { get { return Eye.IsOpen; } }
         internal TaskViews(bool preview)
         {
@@ -646,8 +767,8 @@ namespace TinyTodo
             Eye = new EyeButton { Margin = new Padding(Ui.U(3)) };
             Eye.Click += delegate { SetShowDone(!Eye.IsOpen); };
             tools.Controls.Add(Eye);
-            minus = new IconButton(Glyph.Minus); minus.Click += delegate { Graph.ZoomAt(1 / 1.15F, new Point(Graph.Width / 2, Graph.Height / 2)); };
-            plus = new IconButton(Glyph.Plus); plus.Click += delegate { Graph.ZoomAt(1.15F, new Point(Graph.Width / 2, Graph.Height / 2)); };
+            minus = new IconButton(Glyph.Minus); minus.Click += delegate { Graph.ZoomAt(1 / 1.15F, Graph.CanvasCenter); };
+            plus = new IconButton(Glyph.Plus); plus.Click += delegate { Graph.ZoomAt(1.15F, Graph.CanvasCenter); };
             track = new TrackButton(); track.Click += delegate { LocateCurrent(); };
             tips.SetToolTip(minus, "缩小"); tips.SetToolTip(plus, "放大"); tips.SetToolTip(track, preview ? "归位到当前任务" : "归位");
             track.AccessibleName = preview ? "归位到当前任务" : "归位";
@@ -655,7 +776,7 @@ namespace TinyTodo
             body = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = Theme.Canvas, Padding = Padding.Empty };
             First = new TaskTable { Relation = preview ? -1 : 0 }; body.Controls.Add(First);
             if (preview) { Second = new TaskTable { Relation = 1 }; body.Controls.Add(Second); }
-            Graph = new TaskGraph(); body.Controls.Add(Graph); Graph.Controls.Add(tools); tools.BackColor = Theme.Canvas; Graph.Resize += delegate { ArrangeBar(); };
+            Graph = new TaskGraph { FitPreview = preview }; body.Controls.Add(Graph); Graph.Controls.Add(tools); tools.BackColor = Theme.Canvas; Graph.Resize += delegate { ArrangeBar(); };
             bar.Layout += delegate { ArrangeBar(); };
             root.Controls.Add(bar, 0, 0); root.Controls.Add(body, 0, 1); Controls.Add(root); SelectView(0);
         }
@@ -673,7 +794,7 @@ namespace TinyTodo
             ((SoftButton)firstButton).SelectedTab = mode == 0; firstButton.Invalidate();
             if (secondButton != null) { ((SoftButton)secondButton).SelectedTab = mode == 1; secondButton.Invalidate(); }
             ((SoftButton)treeButton).SelectedTab = mode == 2; treeButton.Invalidate();
-            if (mode == 2) { Graph.CenterCurrent(); Graph.Focus(); }
+            if (mode == 2) { if (!preview) Graph.CenterCurrent(); Graph.Focus(); if (preview) Graph.ResetView(); }
             if (ChangedView != null) ChangedView();
         }
         internal void SetShowDone(bool show)
@@ -683,7 +804,7 @@ namespace TinyTodo
             if (state != null) Graph.ShowTasks(state, show, current, true);
         }
         internal void LocateCurrent()
-        { if (state != null && current != null && Rules.Get(state, current).Done) SetShowDone(true); Graph.ResetView(); Graph.Focus(); }
+        { if (state != null && current != null && Rules.Get(state, current).Done) SetShowDone(true); Graph.Focus(); Graph.ResetView(); }
         internal void Render(State s, string currentId, IEnumerable<Todo> rows)
         {
             bool changed = current != currentId;

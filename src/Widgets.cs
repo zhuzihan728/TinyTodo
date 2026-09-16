@@ -8,6 +8,46 @@ using System.Windows.Forms;
 
 namespace TinyTodo
 {
+    internal interface IWheelTarget
+    {
+        bool CanScrollWheel(int delta);
+        void ScrollWheel(int delta);
+    }
+    internal static class WheelInput
+    {
+        internal static int Steps(ref int remainder, int delta)
+        {
+            if (remainder != 0 && Math.Sign(remainder) != Math.Sign(delta)) remainder = 0;
+            remainder += delta; int steps = remainder / 120; remainder %= 120; return steps;
+        }
+    }
+    // Dismiss after the activation message finishes, then return to the component's page.
+    // Never activate TinyTodo when the click went to another application.
+    internal class TransientPopup : Form
+    {
+        private bool dismissQueued;
+        private Form page;
+        protected override void OnShown(EventArgs e) { page = Owner; base.OnShown(e); }
+        protected override void OnDeactivate(EventArgs e)
+        {
+            base.OnDeactivate(e);
+            if (dismissQueued || IsDisposed || !IsHandleCreated) return;
+            dismissQueued = true;
+            BeginInvoke(new Action(delegate { if (!IsDisposed) Close(); }));
+        }
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            Form target = page ?? Owner;
+            bool returnToPage = DesktopActivity.OwnsForeground;
+            base.OnFormClosed(e);
+            if (target != null && !target.IsDisposed && target.IsHandleCreated && returnToPage)
+                target.BeginInvoke(new Action(delegate
+                {
+                    if (!target.IsDisposed && target.Visible && target.WindowState != FormWindowState.Minimized && DesktopActivity.OwnsForeground)
+                    { target.BringToFront(); target.Activate(); }
+                }));
+        }
+    }
     internal sealed class ThinScroll : Control
     {
         internal int Maximum, Page = 1, Value;
@@ -18,8 +58,9 @@ namespace TinyTodo
         { Maximum = Math.Max(0, maximum); Page = Math.Max(1, page); Value = Math.Max(0, Math.Min(Maximum, value)); Visible = Maximum > 0; Invalidate(); }
         private Rectangle Thumb
         {
-            get { int h = Math.Min(Height, Math.Max(Ui.U(25), Height * Page / Math.Max(1, Maximum + Page)));
-                return new Rectangle(Ui.U(2), Maximum == 0 ? 0 : (Height - h) * Value / Maximum, Math.Max(2, Width - Ui.U(4)), h); }
+            get { int inset = Ui.U(2), track = Math.Max(1, Height - 2 * inset);
+                int h = Math.Min(track, Math.Max(Ui.U(25), track * Page / Math.Max(1, Maximum + Page)));
+                return new Rectangle(Ui.U(2), inset + (Maximum == 0 ? 0 : (track - h) * Value / Maximum), Math.Max(2, Width - Ui.U(4)), h); }
         }
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -35,17 +76,19 @@ namespace TinyTodo
             else MoveTo(Value + (e.Y < Thumb.Top ? -Page : Page));
         }
         protected override void OnMouseMove(MouseEventArgs e)
-        { base.OnMouseMove(e); if (dragging) MoveTo(origin + (e.Y - anchor) * Maximum / Math.Max(1, Height - Thumb.Height)); }
+        { base.OnMouseMove(e); if (dragging) MoveTo(origin + (e.Y - anchor) * Maximum / Math.Max(1, Height - 2 * Ui.U(2) - Thumb.Height)); }
         protected override void OnMouseUp(MouseEventArgs e) { dragging = false; Capture = false; Invalidate(); base.OnMouseUp(e); }
         protected override void OnMouseCaptureChanged(EventArgs e) { if (!Capture) dragging = false; base.OnMouseCaptureChanged(e); }
     }
-    internal sealed class TextViewport : SurfacePanel, IMessageFilter
+    internal sealed class TextViewport : SurfacePanel, IMessageFilter, IWheelTarget
     {
         internal readonly TextBoxBase Editor;
         internal readonly ThinScroll Scrollbar = new ThinScroll();
         private readonly Timer timer = new Timer { Interval = 160 };
         private int documentHeight, wheelRemainder;
         private bool measuring, needsMeasure = true;
+        internal event EventHandler ContentHeightChanged;
+        internal int NaturalHeight { get { Sync(); return Math.Max(Editor.Font.Height, documentHeight) + Padding.Vertical + Ui.U(6); } }
         [DllImport("user32.dll", EntryPoint = "SendMessageW")] private static extern IntPtr Send(IntPtr h, int msg, IntPtr w, IntPtr l);
         [DllImport("user32.dll", EntryPoint = "SendMessageW")] private static extern IntPtr SendPoint(IntPtr h, int msg, IntPtr w, ref Point point);
         [DllImport("user32.dll")] private static extern IntPtr WindowFromPoint(Point point);
@@ -57,7 +100,7 @@ namespace TinyTodo
             if (rich != null)
             {
                 rich.ScrollBars = RichTextBoxScrollBars.None;
-                rich.ContentsResized += delegate(object sender, ContentsResizedEventArgs e) { documentHeight = e.NewRectangle.Height; };
+                rich.ContentsResized += delegate(object sender, ContentsResizedEventArgs e) { int next = e.NewRectangle.Height; if (next == documentHeight) return; documentHeight = next; if (ContentHeightChanged != null) ContentHeightChanged(this, EventArgs.Empty); };
             }
             var plain = editor as TextBox; if (plain != null) plain.ScrollBars = ScrollBars.None;
             Controls.Add(editor); Controls.Add(Scrollbar); Scrollbar.Changed = SetPosition;
@@ -95,13 +138,16 @@ namespace TinyTodo
         }
         internal void ScrollWheel(int delta)
         {
-            Sync(); wheelRemainder += delta; int steps = wheelRemainder / 120; wheelRemainder %= 120;
+            Sync(); int steps = WheelInput.Steps(ref wheelRemainder, delta);
             int lines = SystemInformation.MouseWheelScrollLines;
             int amount = lines < 0 ? Scrollbar.Page : lines * (Editor is RichTextBox ? Editor.Font.Height : 1);
             if (steps != 0) SetPosition(Position - steps * amount);
         }
+        bool IWheelTarget.CanScrollWheel(int delta) { Sync(); return delta > 0 ? Position > 0 : Position < Scrollbar.Maximum; }
+        void IWheelTarget.ScrollWheel(int delta) { ScrollWheel(delta); }
         public bool PreFilterMessage(ref Message message)
         {
+            if (ScrollSurface.Ancestor(this) != null) return false;
             if (message.Msg != 0x20A || !Visible || IsDisposed) return false;
             Control hit = Control.FromChildHandle(WindowFromPoint(Cursor.Position));
             if (hit != this && (hit == null || !Contains(hit))) return false;
@@ -132,41 +178,81 @@ namespace TinyTodo
         protected override void Dispose(bool disposing)
         { if (disposing) { Application.RemoveMessageFilter(this); timer.Dispose(); } base.Dispose(disposing); }
     }
+    internal sealed class PreviewActionBar : Panel
+    {
+        private readonly Control left, delete;
+        internal PreviewActionBar(Control left, Control delete)
+        {
+            this.left = left; this.delete = delete;
+            AutoSize = true; Dock = DockStyle.Fill; Margin = Padding.Empty;
+            left.Dock = DockStyle.None; left.AutoSize = false; delete.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+            Controls.Add(left); Controls.Add(delete);
+        }
+        private int ArrangeActions(int clientWidth, bool apply)
+        {
+            if (left == null || delete == null) return 0;
+            int pad = Ui.U(10), gap = Ui.U(8), width = Math.Max(1, clientWidth - pad * 2);
+            int dw = delete.GetPreferredSize(Size.Empty).Width;
+            int lw = Math.Max(Ui.U(160), width - dw - gap), x = 0, rowY = 0, rowHeight = 0;
+            foreach (Control button in left.Controls)
+            {
+                Size size = button.GetPreferredSize(Size.Empty); int w = size.Width + button.Margin.Horizontal, h = size.Height + button.Margin.Vertical;
+                if (x > 0 && x + w > lw) { rowY += rowHeight; x = 0; rowHeight = 0; }
+                x += w; rowHeight = Math.Max(rowHeight, h);
+            }
+            int height = Math.Max(rowY + rowHeight, delete.GetPreferredSize(Size.Empty).Height);
+            if (apply) { left.SetBounds(pad, pad, lw, height); delete.SetBounds(pad + width - dw, pad, dw, delete.GetPreferredSize(Size.Empty).Height); }
+            return height + pad + gap;
+        }
+        public override Size GetPreferredSize(Size proposedSize)
+        { return new Size(proposedSize.Width, ArrangeActions(proposedSize.Width, false)); }
+        protected override void OnLayout(LayoutEventArgs e) { base.OnLayout(e); ArrangeActions(ClientSize.Width, true); }
+    }
     internal sealed class PreviewLayout : Panel
     {
-        private Control actions, left, delete, title, meta, description, counts, views;
-        private bool arranging;
-        internal void Bind(Control actions, Control left, Control delete, Control title, Control meta, MarkdownView markdown, Control counts, Control views)
+        private Control title, meta, counts;
+        private TextViewport description;
+        private TaskViews views;
+        private bool arranging, queued;
+        private int naturalHeight;
+        internal void Bind(Control title, Control meta, MarkdownView markdown, Control counts, Control views)
         {
-            this.actions = actions; this.left = left; this.delete = delete; this.title = title; this.meta = meta;
-            this.description = new TextViewport(markdown); this.counts = counts; this.views = views;
-            foreach (var c in new Control[] { actions, title, meta, description, counts, views }) { c.Dock = DockStyle.None; Controls.Add(c); }
-            left.Dock = DockStyle.None; left.AutoSize = false; delete.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+            this.title = title; this.meta = meta;
+            this.description = new TextViewport(markdown); this.counts = counts; this.views = (TaskViews)views;
+            foreach (var c in new Control[] { title, meta, description, counts, views }) { c.Dock = DockStyle.None; Controls.Add(c); }
+            description.ContentHeightChanged += delegate { RefreshPage(); };
+            this.views.ChangedView = RefreshPage;
             PerformLayout();
         }
-        protected override void OnLayout(LayoutEventArgs e)
+        internal void RefreshPage()
         {
-            base.OnLayout(e); if (views == null || arranging) return; arranging = true;
+            if (queued || !IsHandleCreated || IsDisposed) return; queued = true;
+            BeginInvoke(new Action(delegate { queued = false; if (IsDisposed) return; if (Parent != null) Parent.PerformLayout(); PerformLayout(); }));
+        }
+        public override Size GetPreferredSize(Size proposedSize)
+        { return new Size(proposedSize.Width, ArrangePage(proposedSize.Width)); }
+        protected override void OnLayout(LayoutEventArgs e) { base.OnLayout(e); ArrangePage(ClientSize.Width); }
+        private int ArrangePage(int clientWidth)
+        {
+            if (views == null || arranging) return naturalHeight;
+            arranging = true;
             try
             {
-                int pad = Ui.U(10), gap = Ui.U(6), width = Math.Max(1, ClientSize.Width - pad * 2), y = pad;
-                int dw = delete.GetPreferredSize(Size.Empty).Width;
-                int lw = Math.Max(Ui.U(160), width - dw - gap), x = 0, rowY = 0, rowHeight = 0;
-                foreach (Control b in left.Controls)
-                {
-                    Size s = b.GetPreferredSize(Size.Empty); int w = s.Width + b.Margin.Horizontal, h = s.Height + b.Margin.Vertical;
-                    if (x > 0 && x + w > lw) { rowY += rowHeight; x = 0; rowHeight = 0; }
-                    x += w; rowHeight = Math.Max(rowHeight, h);
-                }
-                int actionHeight = Math.Max(rowY + rowHeight, delete.GetPreferredSize(Size.Empty).Height);
-                actions.SetBounds(pad, y, width, actionHeight); left.SetBounds(0, 0, lw, actionHeight); delete.SetBounds(width - dw, 0, dw, delete.GetPreferredSize(Size.Empty).Height); y += actionHeight + gap;
-                int titleHeight = Ui.U(42); title.SetBounds(pad, y, width, titleHeight); y += titleHeight + gap;
+                int pad = Ui.U(10), gap = Ui.U(8), width = Math.Max(1, clientWidth - pad * 2), y = pad;
+                title.SetBounds(pad, y, width, Ui.U(42)); title.PerformLayout();
+                var text = title.Controls.OfType<TextBox>().First();
+                int measured = TextRenderer.MeasureText(text.Text, text.Font, new Size(Math.Max(1, text.ClientSize.Width - Ui.U(2)), Int32.MaxValue),
+                    TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Height;
+                if (text.IsHandleCreated) measured = Math.Max(measured, (text.GetLineFromCharIndex(text.TextLength) + 1) * text.Font.Height);
+                int titleHeight = Math.Max(text.Font.Height, measured) + Ui.U(8);
+                title.Height = titleHeight; y += titleHeight + gap;
                 int line = Math.Max(Ui.U(25), meta.Font.Height + Ui.U(10)); meta.SetBounds(pad, y, width, line); y += line + gap;
-                int reserve = Ui.U(140), countHeight = Math.Max(Ui.U(25), counts.Font.Height + Ui.U(10));
-                int dh = Math.Min(Ui.U(160), Math.Max(Ui.U(60), (ClientSize.Height - y - reserve - countHeight - gap * 3 - pad) / 2));
-                description.SetBounds(pad, y, width, dh); y += dh + gap;
-                counts.SetBounds(pad, y, width, countHeight); y += countHeight + gap;
-                views.SetBounds(pad, y, width, Math.Max(Ui.U(90), ClientSize.Height - y - pad));
+                description.SetBounds(pad, y, width, Math.Max(Ui.U(64), description.Height)); description.PerformLayout();
+                int dh = Math.Max(Ui.U(64), description.NaturalHeight);
+                description.Height = dh; y += dh + gap;
+                int countHeight = Math.Max(Ui.U(25), counts.Font.Height + Ui.U(10)); counts.SetBounds(pad, y, width, countHeight); y += countHeight + gap;
+                views.SetBounds(pad, y, width, views.PageContentHeight); y += views.Height + pad;
+                naturalHeight = y; return y;
             }
             finally { arranging = false; }
         }
@@ -238,7 +324,7 @@ namespace TinyTodo
             using (var p = new Pen(pressed ? Theme.Rose : Theme.Border, pressed ? Ui.U(2) : 1.35F * Ui.Scale)) { g.FillPath(b, path); g.DrawPath(p, path); }
             TextRenderer.DrawText(g, Text, Font, new Rectangle(Ui.U(3), -Ui.U(1), Width - Ui.U(6), Height), Theme.Ink, TextFormatFlags.NoPadding | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
         }
-        private sealed class PickerPopup : Form
+        private sealed class PickerPopup : TransientPopup
         {
             internal object Selected;
             internal PickerPopup(IEnumerable<object> choices, object selected)
@@ -252,15 +338,15 @@ namespace TinyTodo
                 list.Picked = choice => { Selected = choice; DialogResult = DialogResult.OK; Close(); };
                 Controls.Add(list); Controls.Add(searchHost); search.TextChanged += delegate { list.Filter(search.Text); };
                 search.KeyDown += delegate(object sender, KeyEventArgs e) { if (!Ui.ExactModifiers(e, Keys.None)) return; if (e.KeyCode == Keys.Down) { list.Focus(); e.SuppressKeyPress = true; } if (e.KeyCode == Keys.Enter) { list.PickCurrent(); e.SuppressKeyPress = true; } };
-                Deactivate += delegate { Close(); }; KeyPreview = true;
+                KeyPreview = true;
                 KeyDown += delegate(object sender, KeyEventArgs e) { if (Ui.ExactModifiers(e, Keys.None) && e.KeyCode == Keys.Escape) Close(); };
                 using (var path = Theme.Rounded(new RectangleF(0, 0, Width, Height), Ui.U(8))) Region = new Region(path);
                 Shown += delegate { search.Focus(); };
             }
         }
-        private sealed class PickerList : Control
+        private sealed class PickerList : Control, IWheelTarget
         {
-            private readonly List<object> all; private List<object> rows; private int first, current;
+            private readonly List<object> all; private List<object> rows; private int first, current, wheelRemainder;
             private readonly ThinScroll scroll = new ThinScroll(); internal Action<object> Picked;
             private int RowHeight { get { return Math.Max(Ui.U(32), Font.Height + Ui.U(12)); } }
             internal PickerList(List<object> all, object selected)
@@ -284,7 +370,10 @@ namespace TinyTodo
             }
             protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); int row = first + e.Y / RowHeight; if (row >= 0 && row < rows.Count) { current = row; Invalidate(); } }
             protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); if (e.Button == MouseButtons.Left) { int row = first + e.Y / RowHeight; if (row >= 0 && row < rows.Count) { current = row; PickCurrent(); } } }
-            protected override void OnMouseWheel(MouseEventArgs e) { first -= e.Delta / 120 * 3; Sync(); Invalidate(); base.OnMouseWheel(e); }
+            bool IWheelTarget.CanScrollWheel(int delta) { return delta > 0 ? first > 0 : first < scroll.Maximum; }
+            void IWheelTarget.ScrollWheel(int delta) { ScrollRows(delta); }
+            private void ScrollRows(int delta) { first -= WheelInput.Steps(ref wheelRemainder, delta) * 3; Sync(); Invalidate(); }
+            protected override void OnMouseWheel(MouseEventArgs e) { var handled = e as HandledMouseEventArgs; if (handled != null) handled.Handled = true; ScrollRows(e.Delta); }
             protected override void OnKeyDown(KeyEventArgs e)
             {
                 if (!Ui.ExactModifiers(e, Keys.None)) { base.OnKeyDown(e); return; }
@@ -469,7 +558,7 @@ namespace TinyTodo
 {
     internal sealed class HoverMarkdown : IDisposable
     {
-        private readonly Timer timer = new Timer { Interval = 450 };
+        private readonly Timer timer = new Timer { Interval = 750 };
         private readonly Timer monitor = new Timer { Interval = 100 };
         private readonly System.Diagnostics.Stopwatch outside = new System.Diagnostics.Stopwatch();
         private Control source; private Todo task; private Point point; private HoverCard card;
@@ -596,7 +685,7 @@ namespace TinyTodo
         protected override void OnLayout(LayoutEventArgs e) { base.OnLayout(e); if (calendar != null) calendar.SetBounds(Width - Ui.U(32), Ui.U(3), Ui.U(28), Ui.U(28)); }
         protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; Theme.Check(e.Graphics, new RectangleF(Ui.U(10), (Height - Ui.U(14)) / 2, Ui.U(14), Ui.U(14)), Checked); }
         protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); if (e.Button == MouseButtons.Left && e.X < Ui.U(32)) Checked = !Checked; }
-        private sealed class CalendarPopup : Form
+        private sealed class CalendarPopup : TransientPopup
         {
             internal DateTime Value; private DateTime month; private int focusDay;
             internal CalendarPopup(DateTime value)
@@ -607,7 +696,7 @@ namespace TinyTodo
                 var previous = new IconButton(Glyph.Left) { Location = new Point(Ui.U(8), Ui.U(6)) }; var next = new IconButton(Glyph.Right) { Location = new Point(Width - Ui.U(38), Ui.U(6)) };
                 previous.Click += delegate { if (month.Year > 1 || month.Month > 1) { month = month.AddMonths(-1); focusDay = 1; Invalidate(); } };
                 next.Click += delegate { if (month.Year < 9999 || month.Month < 12) { month = month.AddMonths(1); focusDay = 1; Invalidate(); } };
-                Controls.Add(previous); Controls.Add(next); Deactivate += delegate { Close(); }; KeyPreview = true;
+                Controls.Add(previous); Controls.Add(next); KeyPreview = true;
                 using (var path = Theme.Rounded(new RectangleF(0, 0, Width, Height), Ui.U(8))) Region = new Region(path);
             }
             protected override void OnPaint(PaintEventArgs e)
@@ -643,35 +732,90 @@ namespace TinyTodo
 
 namespace TinyTodo
 {
-    internal sealed class ScrollSurface : Panel
+    internal sealed class ScrollSurface : Panel, IMessageFilter
     {
-        private readonly Control content; private readonly ThinScroll scroll = new ThinScroll(); private readonly int minimum; private int offset; private bool arranging;
+        private readonly Control content;
+        internal readonly ThinScroll Scrollbar = new ThinScroll();
+        private readonly int minimum;
+        private int offset;
+        private double wheelPixels;
+        private bool arranging;
+        internal bool WholePageWheel;
+        internal int Position { get { return offset; } }
+        [DllImport("user32.dll")] private static extern IntPtr WindowFromPoint(Point point);
+        internal static ScrollSurface Ancestor(Control control)
+        { for (Control parent = control.Parent; parent != null; parent = parent.Parent) { var surface = parent as ScrollSurface; if (surface != null) return surface; } return null; }
         internal ScrollSurface(Control content, int minimum)
         {
             this.content = content; this.minimum = minimum; Dock = DockStyle.Fill; content.Dock = DockStyle.None;
-            Controls.Add(content); Controls.Add(scroll); scroll.BackColor = Theme.Canvas; scroll.Changed = value => { offset = value; Arrange(); };
-            Watch(content);
+            Controls.Add(content); Controls.Add(Scrollbar); Scrollbar.BackColor = Theme.Canvas; Scrollbar.Changed = SetPosition;
+            Watch(content); Application.AddMessageFilter(this);
         }
         private void Watch(Control control)
         {
             control.Enter += delegate
             {
-                if (!control.IsHandleCreated || !IsHandleCreated) return;
+                // Containers also raise Enter: scrolling their entire bounds jumps to the bottom.
+                if (!control.TabStop || !control.CanSelect || !control.IsHandleCreated || !IsHandleCreated) return;
                 Rectangle r = RectangleToClient(control.RectangleToScreen(control.ClientRectangle));
-                if (r.Top < 0) offset = Math.Max(0, offset + r.Top);
-                else if (r.Bottom > ClientSize.Height) offset += r.Bottom - ClientSize.Height;
-                Arrange();
+                int bottom = ClientSize.Height - Ui.U(12);
+                if (r.Height > bottom) { if (r.Top > bottom || r.Bottom < 0) SetPosition(offset + r.Top); }
+                else if (r.Top < 0) SetPosition(offset + r.Top);
+                else if (r.Bottom > bottom) SetPosition(offset + r.Bottom - bottom);
             };
+            control.ControlAdded += delegate(object sender, ControlEventArgs e) { Watch(e.Control); };
             foreach (Control child in control.Controls) Watch(child);
+        }
+        internal void SetPosition(int value) { offset = value; Arrange(); }
+        internal void ScrollWheel(int delta)
+        {
+            int lines = SystemInformation.MouseWheelScrollLines;
+            double amount = lines < 0 ? Scrollbar.Page : Ui.U(40) * lines / 3.0;
+            if (wheelPixels != 0 && Math.Sign(wheelPixels) == Math.Sign(delta)) wheelPixels = 0;
+            wheelPixels -= delta * amount / 120.0;
+            int movement = (int)wheelPixels; wheelPixels -= movement; SetPosition(offset + movement);
+        }
+        internal void RouteWheel(Control hit, int delta)
+        {
+            var graph = hit as TaskGraph;
+            if (graph != null && (Control.MouseButtons & MouseButtons.Left) != 0)
+            { graph.ZoomWheel(delta, graph.PointToClient(Cursor.Position)); return; }
+            if (!WholePageWheel)
+                for (Control target = hit; target != null && target != this; target = target.Parent)
+                {
+                    var inner = target as IWheelTarget;
+                    if (inner != null && inner.CanScrollWheel(delta)) { inner.ScrollWheel(delta); return; }
+                }
+            ScrollWheel(delta);
+        }
+        public bool PreFilterMessage(ref Message message)
+        {
+            if (message.Msg != 0x20A || !Visible || IsDisposed) return false;
+            Control hit = Control.FromChildHandle(WindowFromPoint(Cursor.Position));
+            if (hit != this && (hit == null || !Contains(hit))) return false;
+            // Only messages over our own page are consumed; other applications keep their input.
+            RouteWheel(hit, (short)((message.WParam.ToInt64() >> 16) & 0xffff)); return true;
         }
         private void Arrange()
         {
             if (content == null || arranging) return; arranging = true;
-            try { int height = Math.Max(minimum, ClientSize.Height), max = Math.Max(0, height - ClientSize.Height); offset = Math.Max(0, Math.Min(max, offset)); scroll.SetRange(max, Math.Max(1, ClientSize.Height), offset);
-                scroll.SetBounds(ClientSize.Width - scroll.Width, 0, scroll.Width, ClientSize.Height); content.SetBounds(0, -offset, Math.Max(1, ClientSize.Width - (max > 0 ? scroll.Width : 0)), height); }
+            try
+            {
+                int viewport = Math.Max(1, ClientSize.Height - Ui.U(12));
+                int width = Math.Max(1, ClientSize.Width - Scrollbar.Width - Ui.U(12));
+                int height = Math.Max(viewport, Math.Max(minimum, content.GetPreferredSize(new Size(width, minimum)).Height));
+                int max = Math.Max(0, height - viewport); offset = Math.Max(0, Math.Min(max, offset));
+                Scrollbar.SetRange(max, viewport, offset);
+                // Leave 20 DIP below the track: the window corner grip overlays its children.
+                Scrollbar.SetBounds(ClientSize.Width - Scrollbar.Width - Ui.U(6), Ui.U(6), Scrollbar.Width, Math.Max(1, ClientSize.Height - Ui.U(26)));
+                content.SetBounds(0, -offset, width, height); Scrollbar.BringToFront();
+            }
             finally { arranging = false; }
         }
         protected override void OnLayout(LayoutEventArgs e) { base.OnLayout(e); Arrange(); }
-        protected override void OnMouseWheel(MouseEventArgs e) { offset -= e.Delta / 120 * Ui.U(40); Arrange(); base.OnMouseWheel(e); }
+        protected override void OnMouseWheel(MouseEventArgs e)
+        { var handled = e as HandledMouseEventArgs; if (handled != null) handled.Handled = true; ScrollWheel(e.Delta); }
+        protected override void Dispose(bool disposing)
+        { if (disposing) Application.RemoveMessageFilter(this); base.Dispose(disposing); }
     }
 }
