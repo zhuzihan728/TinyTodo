@@ -1,4 +1,4 @@
-﻿param([string]$OldVersion = '3.5.3', [string]$NewVersion = '3.5.4')
+﻿param([string]$OldVersion = '3.5.4', [string]$NewVersion = '3.5.5')
 $ErrorActionPreference = 'Stop'
 $project = Split-Path -Parent $PSScriptRoot
 Push-Location $project

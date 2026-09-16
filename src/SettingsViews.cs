@@ -10,7 +10,7 @@ namespace TinyTodo
 {
     internal sealed class SettingsForm : AppWindow
     {
-        internal SettingsForm(Store store, DataLocations locations)
+        internal SettingsForm(Store store, DataLocations locations, Action floatingSaved = null)
         {
             Ui.Setup(this, "设置", 600, 320); MinimizeBox = false;
             var root = Ui.Root(Ui.Auto(), Ui.Auto(), Ui.Auto(), Ui.Fill(), Ui.Auto());
@@ -41,8 +41,67 @@ namespace TinyTodo
             }));
             root.Controls.Add(Ui.Label("当前任务数据目录"), 0, 0); root.Controls.Add(new TextViewport(path) { Height = Ui.U(76) }, 0, 1);
             root.Controls.Add(bar, 0, 2);
-            root.Controls.Add(new Panel { Dock = DockStyle.Fill }, 0, 3);
+            var floating = Ui.Bar();
+            floating.Controls.Add(Ui.Button("悬浮设置", delegate
+            {
+                using (var dialog = new FloatingSettingsForm(store))
+                    if (dialog.ShowDialog(this) == DialogResult.OK && floatingSaved != null) floatingSaved();
+            }));
+            root.Controls.Add(floating, 0, 3);
             Ui.ScrollRoot(this, root, 220); Shown += delegate { Ui.Fit(this); };
+        }
+    }
+
+    internal sealed class FloatingSettingsForm : AppWindow
+    {
+        private readonly Store store;
+        internal readonly ComboBox Mode;
+        internal readonly TextBox Blacklist;
+        internal FloatingSettingsForm(Store store)
+        {
+            this.store = store;
+            Ui.Setup(this, "悬浮设置", 540, 490); MinimizeBox = false;
+            var root = Ui.Root(Ui.Auto(), Ui.Auto(), Ui.Auto(), Ui.Auto(), Ui.Auto(), Ui.Auto(), Ui.Auto(), Ui.Auto());
+            Mode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill, AccessibleName = "猫猫默认显示规则" };
+            Mode.Items.AddRange(new object[] { "默认隐藏猫猫", "全屏时隐藏猫猫", "默认开启猫猫" });
+            Mode.SelectedIndex = store.Current.Window.CatMode == CatVisibilityMode.Hidden ? 0 : store.Current.Window.CatMode == CatVisibilityMode.Always ? 2 : 1;
+            Blacklist = new TextBox { Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill,
+                Height = Ui.U(105), AccessibleName = "程序黑名单", Text = String.Join(Environment.NewLine, (store.Current.Window.CatBlacklist ?? new System.Collections.Generic.List<string>()).Select(n => n + ".exe")) };
+            root.Controls.Add(Ui.Label("猫猫默认显示规则"), 0, 0);
+            root.Controls.Add(Mode, 0, 1);
+            root.Controls.Add(Ui.Label("全屏隐藏只影响猫猫所在屏幕。右键可临时召唤／收起；\n重启应用或保存此设置后恢复默认规则。"), 0, 2);
+            root.Controls.Add(Ui.Label("程序黑名单 · 优先级最高\n程序运行期间始终隐藏猫猫，包括后台运行。每行一个程序名。"), 0, 3);
+            root.Controls.Add(new TextViewport(Blacklist) { Height = Ui.U(111) }, 0, 4);
+            var select = Ui.Bar();
+            select.Controls.Add(Ui.Button("选择程序…", delegate
+            {
+                using (var picker = new OpenFileDialog { Title = "选择要隐藏猫猫的程序", Filter = "程序 (*.exe)|*.exe", Multiselect = true })
+                    if (picker.ShowDialog(this) == DialogResult.OK)
+                    {
+                        // Preserve unfinished manual input; validation and deduplication happen on Save.
+                        string selected = String.Join(Environment.NewLine, picker.FileNames.Select(Path.GetFileName));
+                        Blacklist.Text = Blacklist.Text.TrimEnd() + (String.IsNullOrWhiteSpace(Blacklist.Text) ? "" : Environment.NewLine) + selected;
+                    }
+            }));
+            root.Controls.Add(select, 0, 5);
+            root.Controls.Add(Ui.Label("例如 Code.exe。黑名单生效时无法手动召唤；程序退出后自动恢复。"), 0, 6);
+            var actions = Ui.Bar();
+            var save = Ui.Button("保存", delegate { SaveSettings(); });
+            var cancel = Ui.Button("取消", delegate { DialogResult = DialogResult.Cancel; Close(); });
+            actions.Controls.Add(save); actions.Controls.Add(cancel); root.Controls.Add(actions, 0, 7);
+            CancelButton = cancel;
+            Ui.ScrollRoot(this, root, 420); Shown += delegate { Ui.Fit(this); };
+        }
+        internal bool SaveSettings()
+        {
+            try
+            {
+                var names = CatVisibility.ParseBlacklist(Blacklist.Text);
+                CatVisibilityMode mode = Mode.SelectedIndex == 0 ? CatVisibilityMode.Hidden : Mode.SelectedIndex == 2 ? CatVisibilityMode.Always : CatVisibilityMode.HideFullscreen;
+                store.Change(s => { s.Window.CatMode = mode; s.Window.CatBlacklist = names; });
+                DialogResult = DialogResult.OK; Close(); return true;
+            }
+            catch (Exception ex) { ThemedDialog.Show(this, ex.Message, "无法保存", MessageBoxButtons.OK, MessageBoxIcon.Warning); return false; }
         }
     }
 

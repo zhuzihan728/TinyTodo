@@ -17,7 +17,7 @@ namespace TinyTodo
         internal IconButton AddCaptionAction(Glyph glyph, string name, EventHandler click)
         { var b = new IconButton(glyph) { AccessibleName = name }; b.Click += click; captionTips.SetToolTip(b, name); captionActions.Add(b); Controls.Add(b); PerformLayout(); return b; }
         internal FloatingSwitch AddFloatingSwitch(Action<bool> changed)
-        { var b = new FloatingSwitch { AccessibleName = "窗口／悬浮模式" }; b.Changed = changed; captionActions.Add(b); Controls.Add(b); PerformLayout(); return b; }
+        { var b = new FloatingSwitch { AccessibleName = "收起猫猫" }; b.Changed = changed; captionActions.Add(b); Controls.Add(b); PerformLayout(); return b; }
         internal bool CanResize = true;
         internal int CaptionHeight { get { return Ui.U(40); } }
         [DllImport("user32.dll")] private static extern bool ReleaseCapture();
@@ -43,7 +43,7 @@ namespace TinyTodo
             minimizeButton.SetBounds(closeButton.Left - side - Ui.U(6), y, side, side);
             minimizeButton.Visible = MinimizeBox; closeButton.BringToFront(); minimizeButton.BringToFront();
             int next = MinimizeBox ? minimizeButton.Left : closeButton.Left;
-            for (int i = captionActions.Count - 1; i >= 0; i--) { int w = captionActions[i] is FloatingSwitch ? Ui.U(62) : side; next -= w + Ui.U(4); captionActions[i].SetBounds(next, y, w, side); captionActions[i].BringToFront(); }
+            for (int i = captionActions.Count - 1; i >= 0; i--) { int w = captionActions[i] is FloatingSwitch ? Ui.U(90) : side; next -= w + Ui.U(4); captionActions[i].SetBounds(next, y, w, side); captionActions[i].BringToFront(); }
             int size = Ui.U(18);
             for (int i = 0; i < grips.Count; i++) { grips[i].SetBounds(i % 2 == 0 ? 0 : Width - size, i < 2 ? 0 : Height - size, size, size); grips[i].Visible = CanResize; grips[i].BringToFront(); }
         }

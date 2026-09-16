@@ -10,7 +10,7 @@
 
 ![任务依赖](docs/screenshots/tree.png)
 
-透明动态悬浮入口，点击展开，拖动移动。
+透明动态悬浮入口，记住窗口位置；三种显示规则，支持程序黑名单。
 
 ![悬浮动画](assets/floating-icon.gif)
 

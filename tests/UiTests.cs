@@ -426,6 +426,113 @@ internal static class UiTests
             Assert(clicks == 1, "cancelled mouse capture does not trigger stale bubble click");
         }
     }
+    private static void VerifyCatSettings(Store store)
+    {
+        using (var settings = new FloatingSettingsForm(store))
+        {
+            settings.Show(); Application.DoEvents();
+            Assert(settings.Mode.SelectedIndex == 1, "fullscreen hiding is the default setting");
+            Capture(settings, "floating-settings");
+            settings.Mode.SelectedIndex = 0; settings.Blacklist.Text = "Code.exe\r\nWOW.exe";
+            Assert(settings.SaveSettings(), "floating settings save successfully");
+        }
+        var saved = Store.Read(store.PathName);
+        Assert(saved.Window.CatMode == CatVisibilityMode.Hidden && saved.Window.CatBlacklist.SequenceEqual(new string[] { "Code", "WOW" }), "settings dialog persists selected default and blacklist");
+        using (var settings = new FloatingSettingsForm(store))
+        {
+            Assert(settings.Mode.SelectedIndex == 0 && settings.Blacklist.Text.Contains("WOW.exe"), "reopening settings restores saved controls");
+            settings.Mode.SelectedIndex = 2; settings.Blacklist.Text = ""; settings.Close();
+        }
+        Assert(store.Current.Window.CatMode == CatVisibilityMode.Hidden && store.Current.Window.CatBlacklist.Count == 2, "cancelled settings leave saved preferences intact");
+        store.Change(s => { s.Window.CatBlacklist.Clear(); s.Window.CatMode = CatVisibilityMode.HideFullscreen; });
+        using (var main = new MainForm(store, new DataLocations(Path.GetDirectoryName(store.PathName))))
+        {
+            main.Show(); Application.DoEvents();
+            var bubble = (FloatingIcon)typeof(MainForm).GetField("bubble", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main);
+            var menu = (ContextMenuStrip)typeof(MainForm).GetField("menu", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main);
+            var toggle = Descendants(main).OfType<FloatingSwitch>().Single();
+            main.Location = new Point(Screen.PrimaryScreen.WorkingArea.Left + Ui.U(25), Screen.PrimaryScreen.WorkingArea.Top + Ui.U(45));
+            Ui.Fit(main); Point lastPosition = main.Location;
+            main.Close(); main.ToggleFromBubble(); Application.DoEvents();
+            Assert(main.Visible && main.Location == lastPosition, "closing and reopening from cat retains last dragged position");
+            Assert(Store.Read(store.PathName).Window.X == lastPosition.X && Store.Read(store.PathName).Window.Y == lastPosition.Y, "last normal main-window position persists to disk");
+            bubble.Location = new Point(bubble.Left - Ui.U(50), bubble.Top + Ui.U(20));
+            main.Hide(); main.ToggleFromBubble(); Application.DoEvents();
+            Assert(main.Location == lastPosition, "moving cat does not relocate reopened main window");
+            main.WindowState = FormWindowState.Minimized; main.ToggleFromBubble(); Application.DoEvents();
+            Assert(main.Location == lastPosition, "minimize and reopen preserves main position");
+            Assert(menu.Items[2].Text == "收起猫猫" && toggle.Text == "收起猫猫", "visible cat has matching hide actions");
+            main.UpdateDesktopVisibility(true);
+            Assert(!bubble.Visible && menu.Items[2].Text == "召唤猫猫", "auto-hidden cat offers summon action");
+            main.Hide(); IntPtr foreground = DesktopActivity.GetForegroundWindow();
+            menu.Items[2].PerformClick(); main.UpdateDesktopVisibility(true);
+            Assert(bubble.Visible && !main.Visible && !main.ShowInTaskbar && main.Location == lastPosition && DesktopActivity.GetForegroundWindow() == foreground,
+                "manual summon overrides fullscreen without opening or focusing main window");
+            menu.Items[2].PerformClick(); main.UpdateDesktopVisibility(false);
+            Assert(!bubble.Visible && !main.Visible && menu.Items[2].Text == "召唤猫猫", "manual hide remains hidden through background updates");
+            menu.Items[2].PerformClick();
+            // A real running process is blocked even without a foreground window.
+            string processName = System.Diagnostics.Process.GetCurrentProcess().ProcessName;
+            store.Change(s => s.Window.CatBlacklist.Add(processName));
+            WaitUntil(() => { main.UpdateDesktopVisibility(false); return !bubble.Visible && !menu.Items[2].Enabled; }, "running blacklist process hides manually summoned cat and disables summon");
+            menu.Show(new Point(Screen.PrimaryScreen.WorkingArea.Left + Ui.U(30), Screen.PrimaryScreen.WorkingArea.Top + Ui.U(30)));
+            PumpFor(600);
+            Assert(menu.Visible && !menu.Items[2].Enabled && menu.Items[0].Enabled && menu.Items[menu.Items.Count - 1].Enabled,
+                "blacklist keeps tray menu stable and main/exit commands available");
+            menu.Close();
+            store.Change(s => s.Window.CatBlacklist.Clear());
+            main.UpdateDesktopVisibility(false);
+            Assert(bubble.Visible && menu.Items[2].Enabled, "removing blacklist restores prior manual cat choice");
+            // Windows can remove WS_EX_TOPMOST; restoration must never acquire focus.
+            SetWindowPos(bubble.Handle, new IntPtr(-2), 0, 0, 0, 0, 0x13);
+            Assert((DesktopActivity.GetWindowLong(bubble.Handle, -20) & 8) == 0, "test removes cat topmost style");
+            foreground = DesktopActivity.GetForegroundWindow(); main.UpdateDesktopVisibility(false);
+            Assert((DesktopActivity.GetWindowLong(bubble.Handle, -20) & 8) != 0 && DesktopActivity.GetForegroundWindow() == foreground, "cat repairs topmost without changing foreground");
+            main.Close();
+        }
+        using (var restarted = new MainForm(store, new DataLocations(Path.GetDirectoryName(store.PathName))))
+        {
+            restarted.Show(); Application.DoEvents();
+            Assert(restarted.Location == new Point(store.Current.Window.X, store.Current.Window.Y), "new app instance restores persisted main position");
+            restarted.UpdateDesktopVisibility(true);
+            var bubble = (FloatingIcon)typeof(MainForm).GetField("bubble", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(restarted);
+            Assert(!bubble.Visible, "restart resets temporary summon to saved fullscreen default");
+        }
+        string probeName = "TinyTodo.CatProbe-" + Guid.NewGuid().ToString("N");
+        string probeExe = Path.Combine(Path.GetDirectoryName(store.PathName), probeName + ".exe");
+        string stopFile = probeExe + ".stop";
+        File.Copy(Application.ExecutablePath, probeExe);
+        try
+        {
+            using (var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(probeExe, "--blacklist-probe \"" + stopFile + "\"") { UseShellExecute = false, CreateNoWindow = true }))
+            {
+                var running = new RunningPrograms();
+                WaitUntil(() => running.IsBlocked(new string[] { probeName }), "blacklist detects a background-only process");
+                // Wait for the initial asynchronous snapshot, then prove an unrelated name is not blocked.
+                WaitUntil(() => !running.IsBlocked(new string[] { "TinyTodo.Nonexistent-" + probeName }), "blacklist ignores unrelated process names");
+                Assert(running.IsBlocked(new string[] { probeName.ToUpperInvariant() }), "actual background process matches case-insensitively");
+                File.WriteAllText(stopFile, "stop");
+                Assert(process.WaitForExit(3000), "isolated blacklist probe exits normally");
+                WaitUntil(() => !running.IsBlocked(new string[] { probeName }), "blacklist releases automatically after process exit");
+            }
+        }
+        finally { if (File.Exists(probeExe)) File.Delete(probeExe); if (File.Exists(stopFile)) File.Delete(stopFile); }
+        Rectangle left = new Rectangle(-1920, 0, 1920, 1080), right = new Rectangle(0, 0, 2560, 1440);
+        Assert(!DesktopActivity.IsFullscreenBounds(left, right, false) && !DesktopActivity.IsFullscreenBounds(right, left, false), "fullscreen on another monitor leaves cat visible in either direction");
+        Assert(DesktopActivity.IsFullscreenBounds(left, left, false) && DesktopActivity.IsFullscreenBounds(right, right, false), "fullscreen detected on cat monitor at different resolutions");
+        Assert(!DesktopActivity.IsFullscreenBounds(right, right, true), "ordinary maximized captioned app is not fullscreen even with auto-hidden taskbar");
+        using (var window = new Form { FormBorderStyle = FormBorderStyle.None, StartPosition = FormStartPosition.Manual, Bounds = Screen.PrimaryScreen.Bounds })
+        {
+            window.Show(); Application.DoEvents();
+            Assert(DesktopActivity.IsFullscreenOn(window.Handle, Screen.PrimaryScreen.Bounds), "native DWM detection recognizes actual borderless fullscreen window");
+            Rectangle otherScreen = new Rectangle(Screen.PrimaryScreen.Bounds.Right, Screen.PrimaryScreen.Bounds.Top, 1920, 1080);
+            Assert(!DesktopActivity.IsFullscreenOn(window.Handle, otherScreen), "native fullscreen bounds do not hide cat on another screen");
+            window.WindowState = FormWindowState.Minimized; Application.DoEvents();
+            Assert(!DesktopActivity.IsFullscreenOn(window.Handle, Screen.PrimaryScreen.Bounds), "minimized fullscreen window does not hide cat");
+        }
+    }
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
     private static void VerifyTrayMenu(Store store)
     {
         using (var main = new MainForm(store, new DataLocations(Path.GetDirectoryName(store.PathName))))
@@ -580,8 +687,8 @@ internal static class UiTests
                         Application.DoEvents(); System.Threading.Thread.Sleep(10);
                         stable &= DesktopActivity.GetForegroundWindow() == foreground && GetKeyboardLayout(threadId) == layout;
                     }
-                    Assert(stable && main.Visible && !main.TopMost,
-                        "background ticks and floating restoration preserve external foreground and keyboard layout");
+                    Assert(stable && main.Visible && !main.TopMost && startupBubble.Visible && (DesktopActivity.GetWindowLong(startupBubble.Handle, -20) & 8) != 0,
+                        "ordinary external app leaves cat visible/topmost while preserving foreground and keyboard layout");
                 }
                 finally
                 {
@@ -597,9 +704,40 @@ internal static class UiTests
     private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern IntPtr GetKeyboardLayout(uint threadId);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr WindowFromPoint(Point point);
+    private static void StartInteractiveTests()
+    {
+        // Background shells may not grant foreground activation. Click only our own
+        // verified test surface once; the production app never sends synthetic input.
+        using (var surface = new Form { Text = "TinyTodo UI verification", StartPosition = FormStartPosition.CenterScreen, Size = new Size(320, 120), TopMost = true })
+        {
+            surface.Show(); surface.Activate(); Application.DoEvents();
+            {
+                Point previous = Cursor.Position;
+                try
+                {
+                    Point target = surface.PointToScreen(new Point(40, 40)); Cursor.Position = target;
+                    if (WindowFromPoint(target) != surface.Handle) throw new Exception("Test surface is obscured; refusing to click another application.");
+                    mouse_event(2, 0, 0, 0, UIntPtr.Zero); mouse_event(4, 0, 0, 0, UIntPtr.Zero);
+                    Application.DoEvents(); surface.Activate();
+                }
+                finally { Cursor.Position = previous; }
+            }
+            Assert(DesktopActivity.OwnsForeground, "interactive test process has foreground permission");
+        }
+    }
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--blacklist-probe")
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            while (!File.Exists(args[1]) && watch.ElapsedMilliseconds < 8000) System.Threading.Thread.Sleep(20);
+            return 0;
+        }
         Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
         if (args.Length == 2 && args[0] == "--input-probe")
         {
@@ -625,6 +763,7 @@ internal static class UiTests
             Assert(invariant, "20000 resize/drag operations preserve total, fixed tick and every minimum");
             widths.Fit(widths.MinTotal); Assert(widths.Width.SequenceEqual(widths.Minimum), "minimum panel width naturally resets columns");
 
+            StartInteractiveTests();
             var locations = new DataLocations(temp); locations.Load(); var store = new Store(locations.TaskPath); store.Load();
             var a = new Todo { Name = "前置 A：中文长名称在列尾显示省略号，同时可双击预览完整任务", Due = "2026-09-30", Description = "# 今日计划\n- **关键**事项\n`demo`" };
             var b = new Todo { Name = "后续 B" }; b.Prerequisites.Add(a.Id);
@@ -634,7 +773,7 @@ internal static class UiTests
             if (Environment.GetEnvironmentVariable("TINYTODO_HOVER_ONLY") == "1") { VerifyHoverPersistence(); VerifyHover(); return 0; }
             if (Environment.GetEnvironmentVariable("TINYTODO_INPUT_ONLY") == "1") { VerifyInputIsolation(store); return 0; }
             if (Environment.GetEnvironmentVariable("TINYTODO_TRAY_ONLY") == "1") { VerifyTrayMenu(store); return 0; }
-            if (Environment.GetEnvironmentVariable("TINYTODO_WINDOW_ONLY") == "1") { VerifyWindowRecovery(store); return 0; }
+            if (Environment.GetEnvironmentVariable("TINYTODO_WINDOW_ONLY") == "1") { VerifyWindowRecovery(store); VerifyCatSettings(store); return 0; }
             using (var main = new MainForm(store, locations))
             {
                 main.Show(); Application.DoEvents();
@@ -643,7 +782,7 @@ internal static class UiTests
                 Assert(Descendants(main).OfType<Button>().Any(x => x.AccessibleName == "关闭") && Descendants(main).OfType<Button>().Any(x => x.AccessibleName == "最小化"), "integrated caption buttons available");
                 Assert(main.EdgeHit(new Point(Ui.U(12), Ui.U(12))) == 13 && main.EdgeHit(new Point(main.Width - Ui.U(12), main.Height - Ui.U(12))) == 17, "wide corner zones support diagonal resizing inside rounded edge");
                 var floatingMode = Descendants(main).OfType<FloatingSwitch>().Single();
-                Assert(floatingMode.Top < main.CaptionHeight, "floating mode capsule is in caption");
+                Assert(floatingMode.Top < main.CaptionHeight, "cat visibility button is in caption");
                 var mainTabs = Descendants(main).OfType<MainToolbar>().Single();
                 var listTab = Descendants(mainTabs).OfType<Button>().Single(x => x.Text == "列表");
                 var addButton = Descendants(mainTabs).OfType<Button>().Single(x => x.AccessibleName == "新增");
@@ -920,12 +1059,12 @@ internal static class UiTests
                 Assert(opened == null, "drag selection does not open a link");
                 Assert(!editor.Preview.ActivateLink(editor.Preview.Text.IndexOf("unsafe")), "non-web schemes cannot launch from Markdown");
             }
-            VerifyHoverPersistence(); VerifyHover(); VerifyStableScrolling(); VerifyRefinement(store); VerifyWindowRecovery(store); VerifyTrayMenu(store); VerifyInputIsolation(store); VerifyCompletionFeedback(temp);
+            VerifyHoverPersistence(); VerifyHover(); VerifyStableScrolling(); VerifyRefinement(store); VerifyWindowRecovery(store); VerifyCatSettings(store); VerifyTrayMenu(store); VerifyInputIsolation(store); VerifyCompletionFeedback(temp);
             using (var toggle = new FloatingSwitch())
             {
                 bool mode = false; toggle.Changed = value => { mode = value; toggle.IsFloating = value; };
-                toggle.Choose(true); Assert(mode && toggle.IsFloating, "right capsule side selects floating mode");
-                toggle.Choose(false); Assert(!mode && !toggle.IsFloating, "left capsule side selects window mode");
+                toggle.Choose(true); Assert(mode && toggle.IsFloating, "cat control summons cat");
+                toggle.Choose(false); Assert(!mode && !toggle.IsFloating, "cat control hides cat");
             }
             using (var date = new DateInput())
             {

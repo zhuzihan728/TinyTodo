@@ -363,10 +363,10 @@ namespace TinyTodo
     internal sealed class FloatingSwitch : Control
     {
         internal bool IsFloating; internal Action<bool> Changed; private bool pressed;
-        internal FloatingSwitch() { DoubleBuffered = true; Size = new Size(Ui.U(62), Ui.U(30)); BackColor = Theme.Chrome; TabStop = true; Cursor = Cursors.Hand; }
+        internal FloatingSwitch() { DoubleBuffered = true; Size = new Size(Ui.U(90), Ui.U(30)); BackColor = Theme.Chrome; TabStop = true; Cursor = Cursors.Hand; }
         internal void Choose(bool value) { if (value != IsFloating && Changed != null) Changed(value); }
         protected override void OnMouseDown(MouseEventArgs e) { pressed = e.Button == MouseButtons.Left; Invalidate(); base.OnMouseDown(e); }
-        protected override void OnMouseUp(MouseEventArgs e) { bool choose = pressed && ClientRectangle.Contains(e.Location); pressed = false; Invalidate(); base.OnMouseUp(e); if (choose) Choose(e.X >= Width / 2); }
+        protected override void OnMouseUp(MouseEventArgs e) { bool choose = pressed && ClientRectangle.Contains(e.Location); pressed = false; Invalidate(); base.OnMouseUp(e); if (choose) Choose(!IsFloating); }
         protected override void OnKeyDown(KeyEventArgs e)
         { if (Ui.ExactModifiers(e, Keys.None) && (e.KeyCode == Keys.Left || e.KeyCode == Keys.Right || e.KeyCode == Keys.Space)) { Choose(e.KeyCode == Keys.Space ? !IsFloating : e.KeyCode == Keys.Right); e.SuppressKeyPress = true; } base.OnKeyDown(e); }
         protected override void OnMouseCaptureChanged(EventArgs e) { if (!Capture) pressed = false; Invalidate(); base.OnMouseCaptureChanged(e); }
@@ -376,17 +376,9 @@ namespace TinyTodo
             var g = e.Graphics; g.Clear(Theme.Canvas); g.SmoothingMode = SmoothingMode.AntiAlias;
             using (var path = Theme.Rounded(new RectangleF(1, 1, Width - 3, Height - 3), Height / 2F))
             using (var b = new SolidBrush(Theme.Chrome)) using (var p = new Pen(pressed ? Theme.Rose : Theme.Border, pressed ? Ui.U(2) : 1)) { g.FillPath(b, path); g.DrawPath(p, path); }
-            float diameter = Height - Ui.U(6), left = IsFloating ? Width - diameter - Ui.U(3) : Ui.U(3);
-            using (var b = new SolidBrush(Theme.RoseSoft)) g.FillEllipse(b, left, Ui.U(3), diameter, diameter);
-            var state = g.Save(); g.ScaleTransform(Ui.Scale, Ui.Scale);
-            using (var p = new Pen(Theme.Ink, 1.4F))
-            {
-                p.LineJoin = LineJoin.Round; p.StartCap = p.EndCap = LineCap.Round;
-                using (var path = Theme.Rounded(new RectangleF(8, 9, 14, 11), 2)) g.DrawPath(p, path);
-                g.DrawLine(p, 8, 12, 22, 12); g.DrawLine(p, 11, 10.5F, 12, 10.5F);
-                g.DrawEllipse(p, 41, 9, 12, 12); g.DrawArc(p, 43, 11, 7, 7, 190, 75);
-            }
-            g.Restore(state);
+            using (var font = Theme.Font(9F, FontStyle.Regular, "收起猫猫"))
+                TextRenderer.DrawText(g, IsFloating ? "收起猫猫" : "召唤猫猫", font, ClientRectangle, Enabled ? Theme.Ink : Theme.Muted,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         }
     }
 }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -26,9 +26,15 @@ namespace TinyTodo
         [ScriptIgnore] public bool Done { get { return CompletedAt != null; } }
     }
 
+    public enum CatVisibilityMode { HideFullscreen = 0, Hidden = 1, Always = 2 }
+
     public sealed class Settings
     {
+        // Retained for compatibility with older task files; visibility now uses CatMode.
         public bool Floating { get; set; }
+        public CatVisibilityMode CatMode { get; set; }
+        public List<string> CatBlacklist { get; set; }
+        public Settings() { CatBlacklist = new List<string>(); }
         public int X { get; set; }
         public int Y { get; set; }
         public bool HasPosition { get; set; }
@@ -38,6 +44,28 @@ namespace TinyTodo
         public bool DateCountdown { get; set; }
         public bool DateDescending { get; set; }
         public string ClockZoneId { get; set; }
+    }
+
+    internal static class CatVisibility
+    {
+        internal static bool ShouldShow(CatVisibilityMode mode, bool? manual, bool fullscreen, bool blocked)
+        { return !blocked && (manual ?? (mode != CatVisibilityMode.Hidden && (mode == CatVisibilityMode.Always || !fullscreen))); }
+        internal static List<string> ParseBlacklist(string text)
+        {
+            var names = new List<string>();
+            foreach (string line in (text ?? "").Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string name = Path.GetFileName(line.Trim().Trim('"'));
+                if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) name = name.Substring(0, name.Length - 4);
+                if (String.IsNullOrWhiteSpace(name)) continue;
+                if (name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || name == "." || name == "..")
+                    throw new InvalidOperationException("请输入程序名称，例如 Code.exe；每行一个。");
+                if (!names.Contains(name, StringComparer.OrdinalIgnoreCase)) names.Add(name);
+            }
+            return names;
+        }
+        internal static bool IsBlocked(IEnumerable<string> blacklist, IEnumerable<string> running)
+        { return blacklist != null && blacklist.Intersect(running, StringComparer.OrdinalIgnoreCase).Any(); }
     }
 
     public sealed class State

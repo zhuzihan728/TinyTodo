@@ -46,8 +46,7 @@ namespace TinyTodo
                         }
                         store.RecoverBackup();
                     }
-                    // Every launch starts with the floating entry and task window available.
-                    if (!store.Current.Window.Floating) store.Change(s => s.Window.Floating = true);
+                    // Show the task window at launch; cat visibility follows the saved policy.
                     Application.Run(new MainForm(store, locations));
                 }
                 catch (Exception ex) { ThemedDialog.Show(ex.Message, "TinyTodo 无法启动", MessageBoxButtons.OK, MessageBoxIcon.Error); }
@@ -157,7 +156,11 @@ namespace TinyTodo
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
         [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out NativeRect bounds);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, System.Text.StringBuilder name, int capacity);
-        [DllImport("shell32.dll")] private static extern int SHQueryUserNotificationState(out int state);
+        [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
+        [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hwnd);
+        [DllImport("user32.dll")] private static extern bool IsZoomed(IntPtr hwnd);
+        [DllImport("user32.dll")] internal static extern int GetWindowLong(IntPtr hwnd, int index);
+        [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out NativeRect value, int size);
         [StructLayout(LayoutKind.Sequential)] private struct NativeRect { internal int Left, Top, Right, Bottom; }
         private static readonly uint ProcessId = (uint)Process.GetCurrentProcess().Id;
         internal static bool OwnsForeground
@@ -166,20 +169,54 @@ namespace TinyTodo
         }
         internal static bool CoversScreen(Rectangle window, Rectangle screen)
         { return window.Left <= screen.Left && window.Top <= screen.Top && window.Right >= screen.Right && window.Bottom >= screen.Bottom; }
-        internal static bool ShouldYield
+        internal static bool IsFullscreenBounds(Rectangle window, Rectangle screen, bool maximizedWithCaption)
+        { return !maximizedWithCaption && CoversScreen(window, screen); }
+        internal static bool ShouldYieldOn(Rectangle catScreen)
         {
-            get
+            if (OwnsForeground) return false;
+            return IsFullscreenOn(GetForegroundWindow(), catScreen);
+        }
+        internal static bool IsFullscreenOn(IntPtr window, Rectangle catScreen)
+        {
+            if (window == IntPtr.Zero || !IsWindowVisible(window) || IsIconic(window)) return false;
+            var name = new System.Text.StringBuilder(256); GetClassName(window, name, name.Capacity);
+            if (name.ToString() == "Progman" || name.ToString() == "WorkerW" || name.ToString() == "Shell_TrayWnd" || name.ToString() == "Shell_SecondaryTrayWnd") return false;
+            NativeRect r;
+            // DWM excludes invisible resize borders. This process is DPI aware.
+            if (DwmGetWindowAttribute(window, 9, out r, Marshal.SizeOf(typeof(NativeRect))) != 0 && !GetWindowRect(window, out r)) return false;
+            bool caption = (GetWindowLong(window, -16) & 0x00C00000) == 0x00C00000;
+            return IsFullscreenBounds(Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom), catScreen, IsZoomed(window) && caption);
+        }
+    }
+
+    // Enumerate process names off the UI thread, only when a blacklist is configured.
+    internal sealed class RunningPrograms
+    {
+        private volatile string[] names = new string[0];
+        private int scanning;
+        private bool requestedScan;
+        private volatile bool hasSnapshot;
+        private readonly Stopwatch sinceScan = Stopwatch.StartNew();
+        internal bool IsBlocked(System.Collections.Generic.IEnumerable<string> blacklist)
+        {
+            if (blacklist == null || !blacklist.Any()) return false;
+            if ((!requestedScan || sinceScan.ElapsedMilliseconds >= 1000) && System.Threading.Interlocked.CompareExchange(ref scanning, 1, 0) == 0)
             {
-                if (OwnsForeground) return false;
-                int state;
-                if (SHQueryUserNotificationState(out state) == 0 && state >= 1 && state <= 4) return true;
-                IntPtr foreground = GetForegroundWindow();
-                if (foreground == IntPtr.Zero) return false;
-                var name = new System.Text.StringBuilder(256); GetClassName(foreground, name, name.Capacity);
-                if (name.ToString() == "Progman" || name.ToString() == "WorkerW" || name.ToString() == "Shell_TrayWnd") return false;
-                NativeRect r;
-                return GetWindowRect(foreground, out r) && CoversScreen(Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom), Screen.FromHandle(foreground).Bounds);
+                requestedScan = true; sinceScan.Restart();
+                System.Threading.ThreadPool.QueueUserWorkItem(delegate
+                {
+                    try
+                    {
+                        var found = new System.Collections.Generic.List<string>();
+                        foreach (Process process in Process.GetProcesses())
+                            using (process) { try { found.Add(process.ProcessName); } catch (InvalidOperationException) { } catch (System.ComponentModel.Win32Exception) { } }
+                        names = found.ToArray(); hasSnapshot = true;
+                    }
+                    catch (System.ComponentModel.Win32Exception) { }
+                    finally { System.Threading.Interlocked.Exchange(ref scanning, 0); }
+                });
             }
+            return !hasSnapshot || CatVisibility.IsBlocked(blacklist, names);
         }
     }
 
@@ -198,6 +235,9 @@ namespace TinyTodo
         private readonly Label clock;
         private readonly ZoneSelector clockZone;
         private bool settingClock;
+        private bool? manualCatVisibility;
+        private readonly RunningPrograms runningPrograms = new RunningPrograms();
+        private readonly ToolStripItem catMenuItem;
         private sealed class ZoneChoice
         {
             internal string Id, Name;
@@ -208,7 +248,7 @@ namespace TinyTodo
         public MainForm(Store store, DataLocations locations)
         {
             this.store = store;
-            Ui.Setup(this, "TinyTodo 3.5.4", 720, 500);
+            Ui.Setup(this, "TinyTodo 3.5.5", 720, 500);
             StartPosition = FormStartPosition.Manual;
             appIcon = MakeIcon(); Icon = appIcon;
             var root = Ui.Root(Ui.Auto(), Ui.Fill(), Ui.Auto());
@@ -216,9 +256,9 @@ namespace TinyTodo
             currentButton = Ui.Button("待办", delegate { SwitchHistory(false); });
             historyButton = Ui.Button("历史", delegate { SwitchHistory(true); });
             foreach (SoftButton tab in new Button[] { currentButton, historyButton }) { tab.IndexTab = true; tab.Margin = new Padding(Ui.U(1), Ui.U(3), Ui.U(1), 0); }
-            floatingButton = AddFloatingSwitch(value => { if (value != store.Current.Window.Floating) ToggleFloating(); });
+            floatingButton = AddFloatingSwitch(value => ToggleFloating());
             AddCaptionAction(Glyph.Settings, "设置", delegate
-            { using (var settings = new SettingsForm(store, locations)) { settings.TopMost = TopMost; settings.ShowDialog(this); } });
+            { using (var settings = new SettingsForm(store, locations, delegate { manualCatVisibility = null; ApplyFloating(); })) { settings.TopMost = TopMost; settings.ShowDialog(this); } });
             var addButton = new AddTaskButton(); addButton.Click += delegate { Add(); };
             top.LeftItems.AddRange(new Control[] { currentButton, historyButton, addButton });
             views = new TaskViews(false) { Margin = new Padding(3, 0, 3, 3) }; grid = views.First; top.SetNavigation(views.DetachNavigation());
@@ -253,7 +293,7 @@ namespace TinyTodo
             menu = new SoftMenu { Renderer = new TaskMenuRenderer(), ShowImageMargin = false, BackColor = Theme.Canvas, ForeColor = Theme.Ink, Font = Theme.Font(9.5F, FontStyle.Regular, "任务列表") };
             menu.Items.Add("展开任务表", null, delegate { ShowMain(); });
             menu.Items.Add("添加任务", null, delegate { ShowMain(); Add(); });
-            menu.Items.Add("开启／关闭悬浮图标", null, delegate { ToggleFloating(); });
+            catMenuItem = menu.Items.Add("收起猫猫", null, delegate { ToggleFloating(); });
             menu.Items.Add("完成历史", null, delegate { SwitchHistory(true); ShowMain(false); });
             menu.Items.Add("打开数据文件夹", null, delegate
             {
@@ -262,11 +302,11 @@ namespace TinyTodo
             });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("退出", null, delegate { exiting = true; Close(); });
-            menu.Opening += delegate { desktopMenuOpen = true; };
+            menu.Opening += delegate { RefreshCatControls(); desktopMenuOpen = true; };
             menu.Closed += delegate { desktopMenuOpen = false; };
             // The tray release must finish before the popup takes foreground ownership.
             trayIcon = MakeTrayIcon();
-            tray = new NotifyIcon { Icon = trayIcon, Text = "TinyTodo 3.5.4", Visible = true };
+            tray = new NotifyIcon { Icon = trayIcon, Text = "TinyTodo 3.5.5", Visible = true };
             tray.MouseUp += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Right) QueueTrayMenu(Cursor.Position); };
             tray.MouseClick += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) ShowMain(); };
             bubble = new FloatingIcon(ToggleFromBubble, SaveIconPosition, menu);
@@ -275,6 +315,7 @@ namespace TinyTodo
             bubble.Location = w.HasIconPosition ? new Point(w.IconX, w.IconY) : new Point(Screen.PrimaryScreen.WorkingArea.Right - bubble.Width - Ui.U(16), Screen.PrimaryScreen.WorkingArea.Top + Ui.U(100));
             Ui.Fit(this); Ui.Fit(bubble);
             ApplyFloating();
+            ResizeEnd += delegate { SavePosition(); };
             Resize += delegate { if (WindowState == FormWindowState.Minimized) Collapse(); };
             FormClosing += delegate(object sender, FormClosingEventArgs e)
             { SavePosition(); if (!exiting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } };
@@ -285,7 +326,7 @@ namespace TinyTodo
                 if (Ui.ExactModifiers(e, Keys.None) && e.KeyCode == Keys.Escape) { e.SuppressKeyPress = true; Collapse(); }
             };
             timer = new System.Windows.Forms.Timer { Interval = 250 };
-            timer.Tick += delegate { UpdateDesktopVisibility(DesktopActivity.ShouldYield); UpdateClock(); if (today != DateTime.Today) { today = DateTime.Today; Render(); } };
+            timer.Tick += delegate { UpdateDesktopVisibility(DesktopActivity.ShouldYieldOn(Screen.FromControl(bubble).Bounds)); UpdateClock(); if (today != DateTime.Today) { today = DateTime.Today; Render(); } };
             Microsoft.Win32.SystemEvents.TimeChanged += SystemTimeChanged;
             timer.Start(); SelectClock(); UpdateClock(); Render();
         }
@@ -385,45 +426,48 @@ namespace TinyTodo
             }
             if (resetView) { SwitchHistory(false); views.SelectView(0); }
             WindowState = FormWindowState.Normal;
-            if (store.Current.Window.Floating && !Visible)
-            {
-                Rectangle area = Screen.FromControl(bubble).WorkingArea;
-                Location = new Point(bubble.Left - Width - Ui.U(8), bubble.Top);
-                if (Left < area.Left) Left = bubble.Right + Ui.U(8);
-            }
             Show(); WindowState = FormWindowState.Normal; Ui.Fit(this); BringToFront(); Activate();
         }
         private void Collapse() { SavePosition(); Hide(); }
         private void ApplyFloating()
         {
-            bool floating = store.Current.Window.Floating;
-            ShowInTaskbar = !floating;
-            floatingButton.IsFloating = floating; floatingButton.Invalidate();
-            UpdateDesktopVisibility(DesktopActivity.ShouldYield);
+            // The tray remains the entry point regardless of cat visibility.
+            ShowInTaskbar = false;
+            UpdateDesktopVisibility(DesktopActivity.ShouldYieldOn(Screen.FromControl(bubble).Bounds));
         }
-        // Polling never activates a window. Restoring the bubble also uses WS_EX_NOACTIVATE.
+        private void RefreshCatControls()
+        {
+            string label = bubble.Visible ? "收起猫猫" : "召唤猫猫";
+            floatingButton.IsFloating = bubble.Visible;
+            floatingButton.Text = label; floatingButton.AccessibleName = label;
+            floatingButton.Invalidate(); catMenuItem.Text = label;
+            bool blocked = runningPrograms.IsBlocked(store.Current.Window.CatBlacklist);
+            floatingButton.Enabled = !blocked; catMenuItem.Enabled = !blocked;
+            catMenuItem.ToolTipText = blocked ? "黑名单程序运行中，猫猫暂时隐藏" : "临时切换；重启或保存悬浮设置后恢复默认";
+        }
+        // No input hooks or activation. Manual commands last until restart/settings save;
+        // a running blacklist process always takes precedence, including over a summon.
         internal void UpdateDesktopVisibility(bool yieldToFullscreen)
         {
-            // Do not change floating-icon visibility under an active menu.
-            // Task windows use normal Windows stacking; polling never repins them.
+            bool blocked = runningPrograms.IsBlocked(store.Current.Window.CatBlacklist);
+            bool showBubble = CatVisibility.ShouldShow(store.Current.Window.CatMode, manualCatVisibility, yieldToFullscreen, blocked);
             if (desktopMenuOpen)
             {
-                if (!yieldToFullscreen) return;
+                if (!blocked || !bubble.Visible) { RefreshCatControls(); return; }
                 menu.Close(ToolStripDropDownCloseReason.AppFocusChange);
             }
-            bool floating = store.Current.Window.Floating;
-            bool showBubble = floating && !yieldToFullscreen;
             if (bubble.Visible != showBubble) { if (showBubble) bubble.Show(); else bubble.Hide(); }
+            if (showBubble) bubble.EnsureTopMost();
+            RefreshCatControls();
         }
-        protected override bool ShowWithoutActivation
-        { get { return store == null || store.Current.Window.Floating || DesktopActivity.ShouldYield; } }
+        protected override bool ShowWithoutActivation { get { return true; } }
         private void ToggleFloating()
         {
-            bool wasVisible = Visible; Point location = Location;
-            if (!Change(s => s.Window.Floating = !s.Window.Floating)) return;
+            if (runningPrograms.IsBlocked(store.Current.Window.CatBlacklist)) return;
+            manualCatVisibility = !bubble.Visible;
+            // A menu command can run before Closed, so let this explicit action update now.
+            desktopMenuOpen = false;
             ApplyFloating();
-            if (wasVisible) { Location = location; Show(); Activate(); }
-            else if (!store.Current.Window.Floating) ShowMain();
         }
         private void SaveIconPosition(Point point)
         {
@@ -432,8 +476,9 @@ namespace TinyTodo
         }
         private void SavePosition()
         {
-            if (WindowState != FormWindowState.Normal) return;
-            try { store.Change(s => { s.Window.X = Left; s.Window.Y = Top; s.Window.HasPosition = true; }); }
+            Point position = WindowState == FormWindowState.Normal ? Location : RestoreBounds.Location;
+            if (store.Current.Window.HasPosition && store.Current.Window.X == position.X && store.Current.Window.Y == position.Y) return;
+            try { store.Change(s => { s.Window.X = position.X; s.Window.Y = position.Y; s.Window.HasPosition = true; }); }
             catch (Exception ex) { Error(ex); }
         }
         private void QueueComplete(string id)
@@ -478,7 +523,7 @@ namespace TinyTodo
             currentButton.Text = "待办 " + s.Tasks.Count(t => !t.Done); historyButton.Text = "历史 " + s.Tasks.Count(t => t.Done);
             ((SoftButton)currentButton).SelectedTab = !history; currentButton.Invalidate();
             ((SoftButton)historyButton).SelectedTab = history; historyButton.Invalidate();
-            Text = history ? "TinyTodo 3.5 · 历史" : "TinyTodo 3.5.4";
+            Text = history ? "TinyTodo 3.5 · 历史" : "TinyTodo 3.5.5";
         }
         private bool Change(Action<State> action)
         { try { store.Change(action); Render(); return true; } catch (Exception ex) { Error(ex); return false; } }
@@ -524,6 +569,13 @@ namespace TinyTodo
             };
             ContextMenuStrip = menu; Cursor = Cursors.Hand; DoubleBuffered = true;
             tip.SetToolTip(this, "TinyTodo：点击展开／收起，拖动移动，右键菜单");
+        }
+        [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+        internal void EnsureTopMost()
+        {
+            // Repair only if Windows removed the topmost style; never fight other topmost windows.
+            if (Visible && (DesktopActivity.GetWindowLong(Handle, -20) & 8) == 0)
+                SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0010 | 0x0001 | 0x0002 | 0x0200);
         }
         protected override bool ShowWithoutActivation { get { return true; } }
         protected override CreateParams CreateParams

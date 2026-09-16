@@ -5,7 +5,7 @@ try {
     $reg = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\TinyTodo_is1'
     if (Test-Path $reg) { throw 'Existing install detected; test stopped.' }
     $folder = Join-Path $project ('artifacts/install-validation-' + [Guid]::NewGuid().ToString('N'))
-    $setup = (Resolve-Path -LiteralPath dist/TinyTodo-3.5.4-Setup.exe).Path
+    $setup = (Resolve-Path -LiteralPath dist/TinyTodo-3.5.5-Setup.exe).Path
     $install = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/NOICONS','/TASKS=""',('/DIR="'+$folder+'"')) -WindowStyle Hidden -Wait -PassThru
     if ($install.ExitCode -ne 0) { throw 'Install failed.' }
     Add-Type @"

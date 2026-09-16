@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Linq;
 using TinyTodo;
@@ -93,6 +93,23 @@ internal static class CoreTests
             File.WriteAllText(legacy, "{\"Version\":1,\"Tasks\":[],\"Window\":{\"Floating\":true,\"X\":12,\"Y\":34,\"HasPosition\":true}}");
             State old = Store.Read(legacy);
             Assert(old.Window.Floating && old.Window.X == 12 && !old.Window.HasIconPosition, "v1 settings load with new icon defaults");
+            Assert(old.Window.CatMode == CatVisibilityMode.HideFullscreen && old.Window.CatBlacklist.Count == 0, "old task files default to same-screen fullscreen hiding with empty blacklist");
+            Assert(!CatVisibility.ShouldShow(CatVisibilityMode.Hidden, null, false, false), "hidden default keeps cat hidden");
+            Assert(CatVisibility.ShouldShow(CatVisibilityMode.HideFullscreen, null, false, false), "ordinary apps keep default cat visible");
+            Assert(!CatVisibility.ShouldShow(CatVisibilityMode.HideFullscreen, null, true, false), "same-screen fullscreen hides default cat");
+            Assert(CatVisibility.ShouldShow(CatVisibilityMode.Always, null, true, false), "always-on setting includes fullscreen");
+            Assert(CatVisibility.ShouldShow(CatVisibilityMode.Hidden, true, true, false), "manual summon overrides default during this session");
+            Assert(!CatVisibility.ShouldShow(CatVisibilityMode.Always, false, false, false), "manual hide overrides always-on during this session");
+            foreach (CatVisibilityMode mode in Enum.GetValues(typeof(CatVisibilityMode)))
+                foreach (bool? manual in new bool?[] { null, false, true })
+                    Assert(!CatVisibility.ShouldShow(mode, manual, false, true) && !CatVisibility.ShouldShow(mode, manual, true, true), "blacklist overrides mode and manual choice: " + mode + "/" + manual);
+            var blacklist = CatVisibility.ParseBlacklist("Code.exe\r\ncode.EXE\n C:\\Games\\Wow.exe \nLeague of Legends.exe\n");
+            Assert(blacklist.SequenceEqual(new string[] { "Code", "Wow", "League of Legends" }), "blacklist normalizes paths, suffixes, whitespace and duplicates");
+            Assert(CatVisibility.IsBlocked(blacklist, new string[] { "WOW", "other" }) && !CatVisibility.IsBlocked(blacklist, new string[] { "CodeHelper" }), "blacklist uses exact case-insensitive process names");
+            Reject(() => CatVisibility.ParseBlacklist("*.exe"), "blacklist rejects wildcards");
+            store.Change(s => { s.Window.CatMode = CatVisibilityMode.Hidden; s.Window.CatBlacklist = blacklist; });
+            State savedCat = Store.Read(path);
+            Assert(savedCat.Window.CatMode == CatVisibilityMode.Hidden && savedCat.Window.CatBlacklist.SequenceEqual(blacklist) && savedCat.Tasks.Count == store.Current.Tasks.Count, "floating preferences persist without changing task records");
             var locations = new DataLocations(Path.Combine(dir, "metadata")); locations.Load();
             var moving = new Store(locations.TaskPath); moving.Load();
             moving.Change(s => s.Tasks.Add(new Todo { Name = "keep through migration" }));
