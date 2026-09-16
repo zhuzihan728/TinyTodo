@@ -19,6 +19,7 @@ namespace TinyTodo
             private string id;
             private Action refresh;
             private readonly ToolStripMenuItem important;
+            private readonly Bitmap importantIcon = Ui.ImportantImage();
             internal TaskActionMenu(Control source)
             {
                 Renderer = new TaskMenuRenderer();
@@ -26,7 +27,8 @@ namespace TinyTodo
                 Items.Add("编辑", null, delegate { Run(4); });
                 Items.Add("添加前置", null, delegate { Run(0); });
                 Items.Add("添加后续", null, delegate { Run(1); });
-                important = new ToolStripMenuItem("设为！", null, delegate { Run(3); }); important.Image = null;
+                important = new ToolStripMenuItem("设为", importantIcon, delegate { Run(3); })
+                { ImageScaling = ToolStripItemImageScaling.None, TextImageRelation = TextImageRelation.TextBeforeImage };
                 Items.Add(important);
                 Items.Add(new ToolStripSeparator());
                 Items.Add("永久删除", null, delegate { Run(2); });
@@ -36,9 +38,11 @@ namespace TinyTodo
             internal void Bind(Form form, Store data, string taskId, Action update)
             {
                 owner = form; store = data; id = taskId; refresh = update;
-                important.Text = Rules.Get(data.Current, taskId).Important ? "取消！" : "设为！";
+                important.Text = Rules.Get(data.Current, taskId).Important ? "取消" : "设为";
                 important.AccessibleName = important.Text + "重要标记";
             }
+            protected override void Dispose(bool disposing)
+            { if (disposing) importantIcon.Dispose(); base.Dispose(disposing); }
             private void Run(int action)
             {
                 // Finish menu dismissal before opening a dialog or deleting its owner.

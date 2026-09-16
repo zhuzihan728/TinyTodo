@@ -1,5 +1,5 @@
 ﻿#ifndef PackageRoot
-  #define PackageRoot AddBackslash(SourcePath) + "..\dist\TinyTodo-Windows-3.5.3"
+  #define PackageRoot AddBackslash(SourcePath) + "..\dist\TinyTodo-Windows-3.5.4"
 #endif
 #ifndef OutputRoot
   #define OutputRoot AddBackslash(SourcePath) + "..\dist"
@@ -8,7 +8,7 @@
 [Setup]
 AppId=TinyTodo
 AppName=TinyTodo
-AppVersion=3.5.3
+AppVersion=3.5.4
 AppPublisher=zhuzihan728
 AppPublisherURL=https://github.com/zhuzihan728/TinyTodo
 AppSupportURL=https://github.com/zhuzihan728/TinyTodo/issues
@@ -28,11 +28,11 @@ AppMutex=Local\TinyTodo.2026.v1
 CloseApplications=no
 RestartApplications=no
 OutputDir={#OutputRoot}
-OutputBaseFilename=TinyTodo-3.5.3-Setup
+OutputBaseFilename=TinyTodo-3.5.4-Setup
 Compression=lzma2
 SolidCompression=yes
 LZMAUseSeparateProcess=yes
-VersionInfoVersion=3.5.3.0
+VersionInfoVersion=3.5.4.0
 VersionInfoDescription=TinyTodo 安装程序
 
 [Languages]

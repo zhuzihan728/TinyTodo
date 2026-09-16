@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 if not exist bin\version.txt goto build
-findstr /x /c:"3.5.3" bin\version.txt >nul
+findstr /x /c:"3.5.4" bin\version.txt >nul
 if errorlevel 1 goto build
 if exist bin\TinyTodo.exe goto ready
 :build

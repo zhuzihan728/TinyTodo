@@ -64,6 +64,27 @@ internal static class UiTests
     }
     [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "SendMessageW")]
     private static extern IntPtr Send(IntPtr handle, int message, IntPtr w, IntPtr l);
+    private static void VerifySingleMenuGlyph(ContextMenuStrip menu, ToolStripItem item)
+    {
+        using (var bitmap = new Bitmap(menu.Width, menu.Height))
+        {
+            menu.DrawToBitmap(bitmap, menu.ClientRectangle);
+            int left = bitmap.Width, right = -1;
+            Rectangle row = Rectangle.Intersect(item.Bounds, menu.ClientRectangle);
+            for (int x = row.Left; x < row.Right; x++)
+            {
+                int redPixels = 0;
+                for (int y = row.Top; y < row.Bottom; y++)
+                {
+                    Color pixel = bitmap.GetPixel(x, y);
+                    if (pixel.R > 150 && pixel.G < 125 && pixel.B > 60 && pixel.R - pixel.G > 85) redPixels++;
+                }
+                // Ignore isolated ClearType color fringes along the brown text.
+                if (redPixels >= 3) { left = Math.Min(left, x); right = Math.Max(right, x); }
+            }
+            Assert(right >= left && right - left < Ui.U(10), "menu draws one compact important icon without an extra shortcut-column copy");
+        }
+    }
     private static void PumpFor(int milliseconds)
     {
         var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -704,12 +725,16 @@ internal static class UiTests
                 }
                 Assert(editorSeen && editorCorrect && editorMarkdown && Rules.Get(store.Current, a.Id).Description == a.Description, "popup edit opens correct task, renders Markdown and cancel leaves source intact");
                 popup = TaskActions.Menu(main, grid, new Point(20, 20), store, a.Id, delegate { Descendants(main).OfType<Button>().First(x => x.Text.StartsWith("待办")).PerformClick(); });
-                var flagAction = popup.Items.OfType<ToolStripMenuItem>().First(x => x.Text == "设为！");
-                Assert(flagAction.Image == null && flagAction.Tag == null, "important menu is plain text without a separate icon");
+                var flagAction = popup.Items.OfType<ToolStripMenuItem>().First(x => x.Text == "设为" && x.AccessibleName == "设为重要标记");
+                Assert(flagAction.Image != null && flagAction.TextImageRelation == TextImageRelation.TextBeforeImage, "important menu uses the shared icon after its label");
+                Capture(popup, "important-menu-set");
+                VerifySingleMenuGlyph(popup, flagAction);
                 flagAction.PerformClick(); popup.Close(); Application.DoEvents();
                 Assert(Rules.Get(store.Current, a.Id).Important && grid.Rows[0].Task.Name == a.Name && grid.Rows[0].Task.Important, "menu important action persists flag and decorates unchanged task name");
                 popup = TaskActions.Menu(main, grid, new Point(20, 20), store, a.Id, delegate { });
-                Assert(popup.Items.OfType<ToolStripMenuItem>().Any(x => x.Text == "取消！" && x.Image == null && x.Tag == null), "flagged menu keeps plain cancel label"); popup.Close();
+                Assert(popup.Items.OfType<ToolStripMenuItem>().Any(x => x.Text == "取消" && x.AccessibleName == "取消重要标记" && x.Image != null && x.TextImageRelation == TextImageRelation.TextBeforeImage), "flagged menu keeps the shared icon after cancel label");
+                Capture(popup, "important-menu-cancel");
+                VerifySingleMenuGlyph(popup, popup.Items.OfType<ToolStripMenuItem>().Single(x => x.AccessibleName == "取消重要标记")); popup.Close();
                 using (var source = new Panel())
                 {
                     main.Controls.Add(source);

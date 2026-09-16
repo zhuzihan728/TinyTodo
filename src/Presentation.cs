@@ -22,6 +22,23 @@ namespace TinyTodo
         }
         protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
         {
+            // WinForms also asks the renderer to paint an empty shortcut label.
+            if (String.IsNullOrEmpty(e.Text)) return;
+            if (e.Item.Image != null && e.Item.TextImageRelation == TextImageRelation.TextBeforeImage)
+            {
+                // Match the preview button: compact text followed by the shared important icon.
+                using (var format = new StringFormat(StringFormat.GenericTypographic))
+                using (var brush = new SolidBrush(e.Item.Enabled ? Theme.Ink : Theme.Muted))
+                {
+                    format.FormatFlags |= StringFormatFlags.NoWrap;
+                    SizeF size = e.Graphics.MeasureString(e.Text, e.TextFont, Int32.MaxValue, format);
+                    float height = Math.Min(Ui.U(13), e.TextFont.Height), width = height * 7 / 13F;
+                    float left = Ui.U(9), gap = Ui.U(1);
+                    e.Graphics.DrawString(e.Text, e.TextFont, brush, new PointF(left, (e.Item.Height - size.Height) / 2F), format);
+                    e.Graphics.DrawImage(e.Item.Image, left + size.Width + gap, (e.Item.Height - height) / 2F, width, height);
+                }
+                return;
+            }
             TextRenderer.DrawText(e.Graphics, e.Text, e.TextFont,
                 new Rectangle(Ui.U(9), 0, e.Item.Width - Ui.U(18), e.Item.Height),
                 e.Item.Enabled ? Theme.Ink : Theme.Muted,
@@ -40,7 +57,7 @@ namespace TinyTodo
         {
             int width = Ui.U(125);
             foreach (ToolStripItem item in Items)
-            { item.Font = Font; item.ForeColor = Theme.Ink; width = Math.Max(width, TextRenderer.MeasureText(item.Text, Font).Width + Ui.U(36)); }
+            { item.Font = Font; item.ForeColor = Theme.Ink; width = Math.Max(width, TextRenderer.MeasureText(item.Text, Font).Width + Ui.U(36) + (item.Image == null ? 0 : item.Image.Width + Ui.U(1))); }
             foreach (ToolStripItem item in Items)
             { item.AutoSize = false; item.Size = new Size(width, item is ToolStripSeparator ? Ui.U(9) : Math.Max(Ui.U(31), Font.Height + Ui.U(12))); }
             base.OnOpening(e);
