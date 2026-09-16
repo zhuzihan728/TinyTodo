@@ -216,7 +216,8 @@ namespace TinyTodo
             Cursor = DividerAt(e.Location) >= 0 ? Cursors.VSplit : Cursors.Default;
             int row = RowAt(e.Y); Todo task = row < 0 || ColumnAt(e.X) <= 0 ? null : Rows[row].Task;
             string id = task == null ? null : task.Id;
-            if (id != hoverId) { hoverId = id; if (task == null) hoverPreview.Leave(); else hoverPreview.Schedule(this, task, PointToScreen(e.Location)); }
+            if (id != hoverId) { hoverId = id; if (task == null) hoverPreview.Leave(); else hoverPreview.Schedule(this, task, PointToScreen(e.Location), delegate(Point p)
+                { int at = RowAt(p.Y); return at >= 0 && ColumnAt(p.X) > 0 && Rows[at].Task != null && Rows[at].Task.Id == id; }); }
         }
         protected override void OnMouseUp(MouseEventArgs e)
         {
@@ -527,7 +528,8 @@ namespace TinyTodo
             }
             GraphNode n = Hit(e.Location); Cursor = n == null ? Cursors.Hand : Cursors.Default;
             string id = n == null ? null : n.Task.Id;
-            if (hover != id) { hover = id; if (n == null) tip.Leave(); else tip.Schedule(this, n.Task, PointToScreen(e.Location)); }
+            if (hover != id) { hover = id; if (n == null) tip.Leave(); else tip.Schedule(this, n.Task, PointToScreen(e.Location), delegate(Point p)
+                { GraphNode target = Hit(p); return target != null && target.Task.Id == id; }); }
         }
         protected override void OnMouseUp(MouseEventArgs e)
         {

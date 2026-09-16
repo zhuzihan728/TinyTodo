@@ -64,6 +64,58 @@ internal static class UiTests
     }
     [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "SendMessageW")]
     private static extern IntPtr Send(IntPtr handle, int message, IntPtr w, IntPtr l);
+    private static void PumpFor(int milliseconds)
+    {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        while (watch.ElapsedMilliseconds < milliseconds) { Application.DoEvents(); System.Threading.Thread.Sleep(10); }
+    }
+    private static Form HoverWindow(HoverMarkdown hover)
+    { return (Form)typeof(HoverMarkdown).GetField("card", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(hover); }
+    private static void VerifyHoverPersistence()
+    {
+        Point originalPointer = Cursor.Position;
+        try
+        {
+            using (var host = new AppWindow())
+            using (var table = new TaskTable { Dock = DockStyle.Fill })
+            {
+                host.ClientSize = new Size(Ui.U(520), Ui.U(380)); host.Controls.Add(table);
+                var task = new Todo { Name = "保持悬停", Description = "# Markdown\n\n鼠标停在任务上时保持可见。" };
+                var state = new State(); state.Tasks.Add(task); table.ShowTasks(state, state.Tasks, false);
+                host.Show(); host.Activate(); Application.DoEvents();
+                var hover = (HoverMarkdown)typeof(TaskTable).GetField("hoverPreview", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(table);
+                Rectangle cell = table.CellBounds(1, 0); Point local = new Point(cell.Left + Ui.U(25), cell.Top + cell.Height / 2);
+                Cursor.Position = table.PointToScreen(local); Mouse(table, "OnMouseMove", MouseButtons.None, local.X, local.Y);
+                WaitUntil(() => HoverWindow(hover) != null, "task hover opens Markdown preview after its delay");
+                var card = HoverWindow(hover); PumpFor(800);
+                Assert(!card.IsDisposed && card.Visible, "Markdown preview stays open while pointer remains over original task");
+                Cursor.Position = card.PointToScreen(new Point(Ui.U(45), Ui.U(50))); hover.Leave(); PumpFor(450);
+                Assert(!card.IsDisposed && card.Visible, "pointer can enter Markdown card without it closing");
+                Cursor.Position = table.PointToScreen(local); Mouse(table, "OnMouseMove", MouseButtons.None, local.X, local.Y); PumpFor(450);
+                Assert(Object.ReferenceEquals(card, HoverWindow(hover)) && !card.IsDisposed, "returning to the same task keeps the existing preview");
+                Cursor.Position = table.PointToScreen(new Point(Ui.U(15), table.Height - Ui.U(15))); Mouse(table, "OnMouseMove", MouseButtons.None, Ui.U(15), table.Height - Ui.U(15));
+                WaitUntil(() => card.IsDisposed, "preview closes after pointer leaves both task and card");
+                host.Hide();
+            }
+            using (var host = new AppWindow())
+            using (var graph = new TaskGraph { Dock = DockStyle.Fill })
+            {
+                host.ClientSize = new Size(Ui.U(520), Ui.U(380)); host.Controls.Add(graph);
+                var task = new Todo { Name = "树节点悬停", Description = "**预览不会一闪而过。**" };
+                var state = new State(); state.Tasks.Add(task);
+                host.Show(); host.Activate(); graph.ShowTasks(state, true, task.Id, true); Application.DoEvents();
+                RectangleF bounds = graph.LayoutData.Nodes[task.Id].Bounds;
+                Point local = Point.Round(graph.ToScreen(new PointF(bounds.Left + 50, bounds.Top + 25)));
+                var hover = (HoverMarkdown)typeof(TaskGraph).GetField("tip", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(graph);
+                Cursor.Position = graph.PointToScreen(local); Mouse(graph, "OnMouseMove", MouseButtons.None, local.X, local.Y);
+                WaitUntil(() => HoverWindow(hover) != null, "tree node hover opens preview");
+                var card = HoverWindow(hover); PumpFor(800);
+                Assert(!card.IsDisposed && card.Visible, "tree preview stays open over original node");
+                host.Hide(); WaitUntil(() => card.IsDisposed, "hiding owner closes hover preview");
+            }
+        }
+        finally { Cursor.Position = originalPointer; }
+    }
     private static void VerifyHover()
     {
         using (var host = new AppWindow())
@@ -74,7 +126,8 @@ internal static class UiTests
             try
             {
                 var task = new Todo { Name = "可选择复制的标题", Description = String.Join("\n", Enumerable.Range(1, 60).Select(i => "第 " + i + " 行 Markdown 内容")) };
-                hover.Schedule(host, task, host.PointToScreen(new Point(Ui.U(20), Ui.U(45))));
+                Cursor.Position = host.PointToScreen(new Point(Ui.U(20), Ui.U(45)));
+                hover.Schedule(host, task, Cursor.Position);
                 ((Timer)typeof(HoverMarkdown).GetField("timer", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(hover)).Stop();
                 typeof(HoverMarkdown).GetMethod("Show", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(hover, null);
                 var card = (Form)typeof(HoverMarkdown).GetField("card", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(hover);
@@ -557,6 +610,7 @@ internal static class UiTests
             var c = new Todo { Name = "间接后续 C" }; c.Prerequisites.Add(b.Id);
             var d = new Todo { Name = "共享后续 D" }; d.Prerequisites.Add(a.Id); d.Prerequisites.Add(b.Id);
             store.Change(s => s.Tasks.AddRange(new Todo[] { a, b, c, d }));
+            if (Environment.GetEnvironmentVariable("TINYTODO_HOVER_ONLY") == "1") { VerifyHoverPersistence(); VerifyHover(); return 0; }
             if (Environment.GetEnvironmentVariable("TINYTODO_INPUT_ONLY") == "1") { VerifyInputIsolation(store); return 0; }
             if (Environment.GetEnvironmentVariable("TINYTODO_TRAY_ONLY") == "1") { VerifyTrayMenu(store); return 0; }
             if (Environment.GetEnvironmentVariable("TINYTODO_WINDOW_ONLY") == "1") { VerifyWindowRecovery(store); return 0; }
@@ -841,7 +895,7 @@ internal static class UiTests
                 Assert(opened == null, "drag selection does not open a link");
                 Assert(!editor.Preview.ActivateLink(editor.Preview.Text.IndexOf("unsafe")), "non-web schemes cannot launch from Markdown");
             }
-            VerifyHover(); VerifyStableScrolling(); VerifyRefinement(store); VerifyWindowRecovery(store); VerifyTrayMenu(store); VerifyInputIsolation(store); VerifyCompletionFeedback(temp);
+            VerifyHoverPersistence(); VerifyHover(); VerifyStableScrolling(); VerifyRefinement(store); VerifyWindowRecovery(store); VerifyTrayMenu(store); VerifyInputIsolation(store); VerifyCompletionFeedback(temp);
             using (var toggle = new FloatingSwitch())
             {
                 bool mode = false; toggle.Changed = value => { mode = value; toggle.IsFloating = value; };

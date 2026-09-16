@@ -396,28 +396,69 @@ namespace TinyTodo
     internal sealed class HoverMarkdown : IDisposable
     {
         private readonly Timer timer = new Timer { Interval = 450 };
+        private readonly Timer monitor = new Timer { Interval = 100 };
+        private readonly System.Diagnostics.Stopwatch outside = new System.Diagnostics.Stopwatch();
         private Control source; private Todo task; private Point point; private HoverCard card;
-        internal HoverMarkdown() { timer.Tick += delegate { timer.Stop(); Show(); }; }
-        internal void Schedule(Control source, Todo task, Point point)
-        { Hide(); this.source = source; this.task = task; this.point = point; timer.Interval = 450; timer.Start(); }
+        private Func<Point, bool> hitTest;
+        internal HoverMarkdown()
+        {
+            timer.Tick += delegate { timer.Stop(); Show(); };
+            monitor.Tick += delegate { CheckPointer(); };
+        }
+        internal void Schedule(Control source, Todo task, Point point, Func<Point, bool> hitTest = null)
+        {
+            // Returning from the card to its original task must not rebuild the popup.
+            if (card != null && !card.IsDisposed && this.source == source && this.task.Id == task.Id)
+            { this.hitTest = hitTest; outside.Reset(); return; }
+            Hide(); this.source = source; this.task = task; this.point = point; this.hitTest = hitTest;
+            timer.Start();
+        }
+        private bool SourceAvailable()
+        {
+            if (source == null || source.IsDisposed || !source.IsHandleCreated || !source.Visible) return false;
+            Form owner = source.FindForm();
+            return owner != null && !owner.IsDisposed && owner.Visible && owner.WindowState != FormWindowState.Minimized;
+        }
+        private bool OverSource()
+        {
+            if (!SourceAvailable()) return false;
+            Point local = source.PointToClient(Cursor.Position);
+            return source.ClientRectangle.Contains(local) && (hitTest == null || hitTest(local));
+        }
         private void Show()
         {
-            if (source == null || source.IsDisposed || !source.Visible || task == null || !DesktopActivity.OwnsForeground) return;
+            if (!SourceAvailable() || task == null || !DesktopActivity.OwnsForeground || !OverSource()) return;
             card = new HoverCard(task); Rectangle area = Screen.FromPoint(point).WorkingArea;
             card.Location = new Point(Math.Max(area.Left, Math.Min(point.X + Ui.U(12), area.Right - card.Width)), Math.Max(area.Top, Math.Min(point.Y + Ui.U(20), area.Bottom - card.Height)));
-            var shown = card; card.FormClosed += delegate { if (Object.ReferenceEquals(card, shown)) card = null; };
-            card.Show(source.FindForm());
+            var shown = card;
+            card.FormClosed += delegate
+            {
+                if (Object.ReferenceEquals(card, shown)) { card = null; monitor.Stop(); outside.Reset(); }
+            };
+            card.Show(source.FindForm()); outside.Reset(); monitor.Start();
+        }
+        private void CheckPointer()
+        {
+            if (card == null || card.IsDisposed) { monitor.Stop(); return; }
+            if (!SourceAvailable() || !DesktopActivity.OwnsForeground) { Hide(); return; }
+            if (card.Bounds.Contains(Cursor.Position) || OverSource()) { outside.Reset(); return; }
+            // Allow crossing the small gap between the task and the popup.
+            if (!outside.IsRunning) outside.Start();
+            else if (outside.ElapsedMilliseconds >= 180) Hide();
         }
         internal void Leave()
         {
-            timer.Stop(); timer.Interval = 120;
-            // A separate short one-shot lets the pointer enter the hover card and use links/scrolling.
-            if (card == null) return;
-            var leave = new Timer { Interval = 180 };
-            leave.Tick += delegate { leave.Stop(); leave.Dispose(); if (card != null && !card.Bounds.Contains(Cursor.Position)) Hide(); }; leave.Start();
+            timer.Stop();
+            if (card != null) CheckPointer();
         }
-        internal void Hide() { timer.Stop(); var old = card; card = null; if (old != null) { old.Close(); old.Dispose(); } }
-        public void Dispose() { Hide(); timer.Dispose(); }
+        internal void Hide()
+        {
+            timer.Stop(); monitor.Stop(); outside.Reset();
+            var old = card; card = null;
+            source = null; task = null; hitTest = null;
+            if (old != null) { old.Close(); old.Dispose(); }
+        }
+        public void Dispose() { Hide(); timer.Dispose(); monitor.Dispose(); }
         private sealed class HoverCard : Form, IMessageFilter
         {
             private readonly TextViewport viewport;
@@ -439,8 +480,6 @@ namespace TinyTodo
                 var preview = new MarkdownView(); viewport = new TextViewport(preview); preview.ShowMarkdown(task.Description);
                 Controls.Add(viewport); Controls.Add(title); Application.AddMessageFilter(this);
                 using (var path = Theme.Rounded(new RectangleF(0, 0, Width, Height), Ui.U(8))) Region = new Region(path);
-                var check = new Timer { Interval = 250 }; check.Tick += delegate { if (!DesktopActivity.OwnsForeground || Owner == null || !Owner.Visible || !Bounds.Contains(Cursor.Position)) { check.Stop(); Close(); } }; MouseEnter += delegate { check.Start(); };
-                preview.MouseEnter += delegate { check.Start(); }; title.MouseEnter += delegate { check.Start(); }; FormClosed += delegate { check.Dispose(); }; check.Start();
             }
         }
     }
