@@ -7,28 +7,26 @@ using System.Windows.Forms;
 
 namespace TinyTodo
 {
-    // Only the two interior dividers can move. Adjacent columns share a fixed budget.
+    // The name/date divider shares a fixed width budget.
     internal sealed class ColumnWidths
     {
         internal readonly int[] Minimum;
         internal readonly int[] Width;
-        internal ColumnWidths(int done, int name, int due, int state)
-        { Minimum = new int[] { done, name, due, state }; Width = (int[])Minimum.Clone(); }
+        internal ColumnWidths(int done, int name, int due)
+        { Minimum = new int[] { done, name, due }; Width = (int[])Minimum.Clone(); }
         internal int MinTotal { get { return Minimum.Sum(); } }
         internal void Fit(int total)
         {
             total = Math.Max(total, MinTotal);
             Width[0] = Minimum[0];
             int extra = total - MinTotal;
-            // Preserve date/status preferences while giving spare space to the task name.
-            Width[3] = Minimum[3] + Math.Min(Math.Max(0, Width[3] - Minimum[3]), extra);
-            extra -= Width[3] - Minimum[3];
+            // Preserve date width and give the remaining space to the task name.
             Width[2] = Minimum[2] + Math.Min(Math.Max(0, Width[2] - Minimum[2]), extra);
-            Width[1] = total - Width[0] - Width[2] - Width[3];
+            Width[1] = total - Width[0] - Width[2];
         }
         internal void Drag(int left, int delta)
         {
-            if (left != 1 && left != 2) return;
+            if (left != 1) return;
             delta = Math.Max(Minimum[left] - Width[left], Math.Min(delta, Width[left + 1] - Minimum[left + 1]));
             Width[left] += delta; Width[left + 1] -= delta;
         }
@@ -40,13 +38,17 @@ namespace TinyTodo
         internal sealed class Row
         {
             internal Todo Task;
-            internal string DateText, Status;
+            internal string DateText;
+            internal int Count;
         }
         internal readonly List<Row> Rows = new List<Row>();
         internal readonly ColumnWidths Sizing;
         internal Action<string> OpenTask, ToggleTask;
         internal Action<string, Point> TaskMenu;
         internal Action AddTask, SortDate, ToggleDateMode;
+        internal Action<TaskSort, bool> SortTasks;
+        internal readonly IconButton Filter = new IconButton(Glyph.Filter) { AccessibleName = "排序", BackColor = Theme.HeaderTint };
+        private readonly SoftMenu sortMenu = new SoftMenu();
         internal readonly SoftButton AddRowButton = new SoftButton();
         internal int Relation;
         internal readonly int ColumnHeadersHeight, RowHeight;
@@ -68,9 +70,10 @@ namespace TinyTodo
         private readonly Timer completionTimer = new Timer { Interval = 16 };
         private const int CompletionDuration = 520;
         private string hoverId;
-        private bool countdown;
+        private bool countdown, reverseSort;
+        private TaskSort currentSort;
         internal int VisibleRows { get { return Math.Max(1, (ClientSize.Height - ColumnHeadersHeight) / RowHeight); } }
-        internal int AvailableWidth { get { return Math.Max(1, ClientSize.Width - (scroll.Visible ? scroll.Width : 0)); } }
+        internal int AvailableWidth { get { return Math.Max(1, ClientSize.Width - (scroll.Maximum > 0 ? scroll.Width : 0)); } }
         internal int RequiredWidth { get { return Sizing.MinTotal + Ui.U(10); } }
         internal string SelectedId { get { return selected < 0 || selected >= Rows.Count || Rows[selected].Task == null ? null : Rows[selected].Task.Id; } }
         internal TaskTable()
@@ -82,8 +85,18 @@ namespace TinyTodo
             RowHeight = Math.Max(Ui.U(40), Font.Height + Ui.U(18));
             int padding = Ui.U(22);
             Sizing = new ColumnWidths(Math.Max(Ui.U(60), Measure("完成") + padding),
-                Math.Max(Ui.U(88), Measure("任务") + padding), Measure("8888-88-88") + padding,
-                Math.Max(Measure("等待 99 项"), Measure("已完成")) + padding);
+                Math.Max(Ui.U(88), Measure("任务") + padding), Measure("8888-88-88") + padding + Ui.U(32));
+            Controls.Add(Filter);
+            Filter.Click += delegate { sortMenu.Show(Filter, new Point(0, Filter.Height)); };
+            sortMenu.Opened += delegate { Filter.Open = true; Filter.Invalidate(); };
+            sortMenu.Closed += delegate { Filter.Open = false; Filter.Invalidate(); };
+            string[] sortNames = { "日期由近到远", "重要任务优先", "创建时间由早到晚", "任务名称", "专注时间由多到少" };
+            for (int i = 0; i < sortNames.Length; i++)
+            {
+                TaskSort sort = (TaskSort)i;
+                sortMenu.Items.Add(sortNames[i], null, delegate { if (SortTasks != null) SortTasks(sort, false); });
+            }
+            sortMenu.Items.Add("反向排序", null, delegate { if (SortTasks != null) SortTasks(currentSort, !reverseSort); });
             completionTimer.Tick += delegate { AdvanceCompletionFeedback(); };
             scroll.BackColor = BackColor; Controls.Add(scroll);
             Application.AddMessageFilter(this);
@@ -143,6 +156,7 @@ namespace TinyTodo
             first = Math.Max(0, Math.Min(first, Math.Max(0, Rows.Count - VisibleRows)));
             scroll.SetRange(Math.Max(0, Rows.Count - VisibleRows), VisibleRows, first);
             scroll.SetBounds(ClientSize.Width - scroll.Width, ColumnHeadersHeight, scroll.Width, Math.Max(1, ClientSize.Height - ColumnHeadersHeight));
+            Filter.SetBounds(AvailableWidth - Ui.U(30), Ui.U(3), Ui.U(25), ColumnHeadersHeight - Ui.U(6));
             LayoutAddButton();
         }
         private void LayoutAddButton()
@@ -161,18 +175,21 @@ namespace TinyTodo
             SyncScroll();
             Form owner = FindForm();
             if (AvailableWidth <= Sizing.MinTotal + Ui.U(28) || (owner != null && owner.Width <= owner.MinimumSize.Width))
-            { Sizing.Width[2] = Sizing.Minimum[2]; Sizing.Width[3] = Sizing.Minimum[3]; }
+            { Sizing.Width[2] = Sizing.Minimum[2]; }
             Sizing.Fit(AvailableWidth); Invalidate();
         }
         protected override void OnResize(EventArgs e) { base.OnResize(e); FitColumns(); }
         internal void ShowTasks(State state, IEnumerable<Todo> tasks, bool addRow)
         {
             countdown = state.Window.DateCountdown;
-            DateHeader = (countdown ? "倒计时" : "日期") + (SortDate == null ? "" : state.Window.DateDescending ? " ↓" : " ↑");
+            currentSort = state.Window.Sort; reverseSort = currentSort == TaskSort.Date ? state.Window.DateDescending : state.Window.SortDescending;
+            for (int i = 0; i < 5; i++) ((ToolStripMenuItem)sortMenu.Items[i]).Checked = i == (int)currentSort;
+            ((ToolStripMenuItem)sortMenu.Items[5]).Checked = reverseSort;
+            DateHeader = (countdown ? "倒计时" : "日期") + (SortDate == null || currentSort != TaskSort.Date ? "" : state.Window.DateDescending ? " ↓" : " ↑");
             string id = SelectedId; hoverPreview.Hide(); hoverId = null; Rows.Clear();
-            if (addRow) Rows.Add(new Row { DateText = "", Status = "" });
+            if (addRow) Rows.Add(new Row { DateText = "" });
             AddRowButton.Text = Relation < 0 ? "＋ 添加前置" : "＋ 添加后续"; AddRowButton.AccessibleName = Relation < 0 ? "添加前置" : "添加后续";
-            foreach (Todo task in tasks) Rows.Add(new Row { Task = task, DateText = Rules.DateText(task, countdown, DateTime.Today), Status = Ui.Status(state, task) });
+            foreach (Todo task in tasks) Rows.Add(new Row { Task = task, DateText = Rules.DateText(task, countdown, DateTime.Today), Count = task.Done && task.SeriesId != null ? Productivity.CompletedCount(state, task) : 0 });
             foreach (var pair in completionEffects.OrderBy(p => p.Value.Index).ToArray())
             {
                 Todo task = state.Tasks.FirstOrDefault(t => t.Id == pair.Key);
@@ -180,7 +197,7 @@ namespace TinyTodo
                 pair.Value.Task = task;
                 pair.Value.Leaving = !Rows.Any(r => r.Task != null && r.Task.Id == pair.Key);
                 if (pair.Value.Leaving) Rows.Insert(Math.Min(pair.Value.Index, Rows.Count), new Row
-                    { Task = task, DateText = Rules.DateText(task, countdown, DateTime.Today), Status = task.Done ? "已完成" : "已恢复" });
+                    { Task = task, DateText = Rules.DateText(task, countdown, DateTime.Today), Count = task.Done && task.SeriesId != null ? Productivity.CompletedCount(state, task) : 0 });
             }
             selected = id == null ? -1 : Rows.FindIndex(r => r.Task != null && r.Task.Id == id);
             FitColumns();
@@ -188,13 +205,13 @@ namespace TinyTodo
         private int DividerAt(Point p)
         {
             if (p.Y < 0 || p.Y >= ColumnHeadersHeight) return -1;
-            for (int i = 1; i <= 2; i++) if (Math.Abs(p.X - Sizing.Width.Take(i + 1).Sum()) <= Ui.U(5)) return i;
+            for (int i = 1; i < Sizing.Width.Length - 1; i++) if (Math.Abs(p.X - Sizing.Width.Take(i + 1).Sum()) <= Ui.U(5)) return i;
             return -1;
         }
         private int ColumnAt(int x)
         {
             if (x < 0 || x >= AvailableWidth) return -1;
-            int right = 0; for (int i = 0; i < 4; i++) { right += Sizing.Width[i]; if (x < right) return i; }
+            int right = 0; for (int i = 0; i < Sizing.Width.Length; i++) { right += Sizing.Width[i]; if (x < right) return i; }
             return -1;
         }
         private int RowAt(int y)
@@ -246,7 +263,7 @@ namespace TinyTodo
             Cursor = DividerAt(e.Location) >= 0 ? Cursors.VSplit : Cursors.Default;
             int row = RowAt(e.Y); Todo task = row < 0 || ColumnAt(e.X) <= 0 ? null : Rows[row].Task;
             string id = task == null ? null : task.Id;
-            if (id != hoverId) { hoverId = id; if (task == null) hoverPreview.Leave(); else hoverPreview.Schedule(this, task, PointToScreen(e.Location), delegate(Point p)
+            if (id != hoverId) { hoverId = id; if (task == null) hoverPreview.Leave(); else hoverPreview.Schedule(this, task, delegate(Point p)
                 { int at = RowAt(p.Y); return at >= 0 && ColumnAt(p.X) > 0 && Rows[at].Task != null && Rows[at].Task.Id == id; }); }
         }
         protected override void OnMouseUp(MouseEventArgs e)
@@ -297,7 +314,7 @@ namespace TinyTodo
         {
             if (Ui.ExactModifiers(e, Keys.Control) && e.KeyCode == Keys.C && SelectedId != null)
             {
-                Row row = Rows[selected]; Clipboard.SetText(row.Task.Name + "\t" + row.DateText + "\t" + row.Status);
+                Row row = Rows[selected]; Clipboard.SetText(row.Task.Name + "\t" + row.DateText);
             }
             else if (Ui.ExactModifiers(e, Keys.None) && (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space))
             {
@@ -323,10 +340,10 @@ namespace TinyTodo
         {
             var g = e.Graphics; g.Clear(BackColor); g.SmoothingMode = SmoothingMode.AntiAlias;
             float gap = Math.Max(1, RowHeight * .05F);
-            string[] headers = { "完成", "任务", DateHeader, "状态" };
+            string[] headers = { "完成", "任务", DateHeader };
             using (var path = Theme.Rounded(new RectangleF(1, 1, Math.Max(1, AvailableWidth - 2), ColumnHeadersHeight - gap - 1), Ui.U(6)))
             using (var fill = new SolidBrush(Theme.HeaderTint)) g.FillPath(fill, path);
-            for (int col = 0; col < 4; col++) DrawText(g, headers[col], CellBounds(col, -1), Theme.Ink, col == 0);
+            for (int col = 0; col < 3; col++) DrawText(g, headers[col], CellBounds(col, -1), Theme.Ink, col == 0);
             var state = g.Save(); g.SetClip(new Rectangle(0, ColumnHeadersHeight, AvailableWidth, Math.Max(0, Height - ColumnHeadersHeight)));
             for (int i = first; i < Math.Min(Rows.Count, first + VisibleRows + 1); i++)
             {
@@ -342,12 +359,20 @@ namespace TinyTodo
                         .5F * Math.Max(0, 1F - effect.Watch.ElapsedMilliseconds / (float)CompletionDuration)))) g.FillPath(brush, path);
                 Rectangle check = CellBounds(0, i); int size = Ui.U(16);
                 Theme.Check(g, new RectangleF(check.X + (check.Width - size) / 2F, check.Y + (check.Height - size) / 2F, size, size), task.Done);
-                for (int col = 1; col < 4; col++)
+                for (int col = 1; col < 3; col++)
                 {
                     Rectangle cell = CellBounds(col, i);
                     if (col == 1 && task.Important)
                     { Ui.DrawImportant(g, new RectangleF(cell.X + Ui.U(8), cell.Y + (cell.Height - Ui.U(13)) / 2F, Ui.U(9), Ui.U(13))); cell.X += Ui.U(12); cell.Width -= Ui.U(12); }
-                    DrawText(g, col == 1 ? task.Name : col == 2 ? row.DateText : effect != null ? (task.Done ? "已完成" : "已恢复") : row.Status, cell, task.Done ? Theme.Muted : Theme.Ink, false);
+                    if (col == 2) cell.Width -= Ui.U(30);
+                    if (col == 1 && row.Count > 0)
+                    {
+                        string badge = "x" + row.Count; int badgeWidth = Measure(badge) + Ui.U(20);
+                        int nameWidth = Math.Min(Measure(task.Name) + Ui.U(16), Math.Max(0, cell.Width - badgeWidth));
+                        DrawText(g, task.Name, new Rectangle(cell.X, cell.Y, nameWidth, cell.Height), Theme.Muted, false);
+                        DrawText(g, badge, new Rectangle(cell.X + nameWidth - Ui.U(12), cell.Y, badgeWidth, cell.Height), Theme.Rose, false);
+                    }
+                    else DrawText(g, col == 1 ? task.Name : row.DateText, cell, task.Done ? Theme.Muted : Theme.Ink, false);
                 }
                 if (effect != null && effect.Leaving)
                 {
@@ -363,7 +388,7 @@ namespace TinyTodo
             TextRenderer.DrawText(g, text, Theme.Font(9.5F, FontStyle.Regular, text), bounds, color,
                 TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.PreserveGraphicsClipping | (center ? TextFormatFlags.HorizontalCenter : TextFormatFlags.Left));
         }
-        protected override void Dispose(bool disposing) { if (disposing) { Application.RemoveMessageFilter(this); completionTimer.Dispose(); dateMenu.Dispose(); hoverPreview.Dispose(); } base.Dispose(disposing); }
+        protected override void Dispose(bool disposing) { if (disposing) { Application.RemoveMessageFilter(this); completionTimer.Dispose(); dateMenu.Dispose(); sortMenu.Dispose(); hoverPreview.Dispose(); } base.Dispose(disposing); }
     }
     internal sealed class GraphNode
     {
@@ -626,7 +651,7 @@ namespace TinyTodo
             }
             GraphNode n = Hit(e.Location); Cursor = n == null ? Cursors.Hand : Cursors.Default;
             string id = n == null ? null : n.Task.Id;
-            if (hover != id) { hover = id; if (n == null) tip.Leave(); else tip.Schedule(this, n.Task, PointToScreen(e.Location), delegate(Point p)
+            if (hover != id) { hover = id; if (n == null) tip.Leave(); else tip.Schedule(this, n.Task, delegate(Point p)
                 { GraphNode target = Hit(p); return target != null && target.Task.Id == id; }); }
         }
         protected override void OnMouseUp(MouseEventArgs e)
@@ -812,8 +837,8 @@ namespace TinyTodo
             state = s; current = currentId;
             if (preview)
             {
-                Todo t = Rules.Get(s, current); First.ShowTasks(s, Rules.ByDate(t.Prerequisites.Select(id => Rules.Get(s, id)), s.Window.DateDescending), true);
-                Second.ShowTasks(s, Rules.ByDate(s.Tasks.Where(x => x.Prerequisites.Contains(current)), s.Window.DateDescending), true);
+                Todo t = Rules.Get(s, current); First.ShowTasks(s, Productivity.Sort(s, t.Prerequisites.Select(id => Rules.Get(s, id))), true);
+                Second.ShowTasks(s, Productivity.Sort(s, s.Tasks.Where(x => x.Prerequisites.Contains(current))), true);
                 if (changed && t.Done) SetShowDone(true);
             }
             else First.ShowTasks(s, rows, false);

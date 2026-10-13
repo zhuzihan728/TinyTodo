@@ -37,11 +37,18 @@ internal static class CaptureDocs
         SaveCatToggle();
         string root = Path.GetFullPath("artifacts/docs-demo"); Directory.CreateDirectory(root);
         var store = new Store(Path.Combine(root, "tasks.json")); store.Load();
-        var research = new Todo { Name = "整理想法", Due = "2026-09-18", Important = true, Description = "# 一个小计划\n\n- 记录灵感\n- 整理资料\n- 给每一步留一点时间" };
-        var draft = new Todo { Name = "完成初稿", Due = "2026-09-20", Description = "## 今天的小目标\n\n先把想法写下来，再慢慢打磨。\n\n- [x] 整理大纲\n- [ ] 补充内容\n\n**一步一步来。**" }; draft.Prerequisites.Add(research.Id);
-        var review = new Todo { Name = "检查与修改", Due = "2026-09-22" }; review.Prerequisites.Add(draft.Id);
-        var publish = new Todo { Name = "发布作品", Due = "2026-09-25", Important = true }; publish.Prerequisites.Add(review.Id);
-        store.Change(s => { s.Tasks.Clear(); s.Tasks.AddRange(new[] { research, draft, review, publish }); s.Window = new Settings { CatMode = CatVisibilityMode.Always }; });
+        var research = new Todo { Name = "整理想法", Due = "2026-10-14", Important = true, Description = "# 一个小计划\n\n- 记录灵感\n- 整理资料\n- 给每一步留一点时间" };
+        var draft = new Todo { Name = "完成初稿", Due = "2026-10-16", Description = "## 今天的小目标\n\n先把想法写下来，再慢慢打磨。\n\n- [x] 整理大纲\n- [ ] 补充内容\n\n**一步一步来。**" }; draft.Prerequisites.Add(research.Id);
+        var review = new Todo { Name = "检查与修改", Due = "2026-10-18" }; review.Prerequisites.Add(draft.Id);
+        var publish = new Todo { Name = "发布作品", Due = "2026-10-21", Important = true }; publish.Prerequisites.Add(review.Id);
+        var study = new Todo { Name = "每天读书", Due = DateTime.Today.AddDays(-2).ToString("yyyy-MM-dd"), Repeat = new RepeatRule { Kind = RepeatKind.Daily }, Description = "每天留一点时间，读几页书，记下一个想法。" };
+        store.Change(s => {
+            s.Tasks.Clear(); s.FocusSessions.Clear(); s.Tasks.AddRange(new[] { research, draft, review, publish, study }); s.Window = new Settings { CatMode = CatVisibilityMode.Always };
+            Rules.Complete(s, study.Id, DateTimeOffset.Now.AddDays(-2));
+            Rules.Complete(s, s.Tasks.Single(t => !t.Done && t.SeriesId == study.Id).Id, DateTimeOffset.Now.AddDays(-1));
+            for (int i = 0; i < 7; i++) s.FocusSessions.Add(new FocusSession { Id = "demo-" + i, TaskId = study.Id, SeriesId = study.Id,
+                StartedAt = DateTimeOffset.Now.AddDays(-i).ToString("o"), Day = DateTime.Today.AddDays(-i).ToString("yyyy-MM-dd"), Seconds = (20 + i * 5) * 60 });
+        });
         using (var main = new MainForm(store, new DataLocations(root)))
         {
             main.Show(); main.Activate(); Save(main, "tasks");
@@ -50,6 +57,9 @@ internal static class CaptureDocs
             views.Graph.ZoomAt(.72F, new Point(views.Graph.Width / 2, views.Graph.Height / 2));
             views.Graph.CenterCurrent(); Save(main, "tree");
         }
+        var currentStudy = store.Current.Tasks.Single(t => !t.Done && t.SeriesId == study.Id);
+        using (var focus = new FocusForm(store, currentStudy.Id))
+        { focus.Show(); focus.Activate(); Save(focus, "focus"); }
         using (var settings = new SettingsForm(store, new DataLocations(root)))
         {
             settings.AddBlacklist(new ProgramEntry { Name = "Visual Studio Code", Executable = "Code.exe" });

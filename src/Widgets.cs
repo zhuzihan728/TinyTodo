@@ -210,16 +210,16 @@ namespace TinyTodo
     }
     internal sealed class PreviewLayout : Panel
     {
-        private Control title, meta, counts;
+        private Control title, meta, counts, focus;
         private TextViewport description;
         private TaskViews views;
         private bool arranging, queued;
         private int naturalHeight;
-        internal void Bind(Control title, Control meta, MarkdownView markdown, Control counts, Control views)
+        internal void Bind(Control title, Control meta, MarkdownView markdown, Control counts, Control views, Control focus)
         {
-            this.title = title; this.meta = meta;
+            this.title = title; this.meta = meta; this.focus = focus;
             this.description = new TextViewport(markdown); this.counts = counts; this.views = (TaskViews)views;
-            foreach (var c in new Control[] { title, meta, description, counts, views }) { c.Dock = DockStyle.None; Controls.Add(c); }
+            foreach (var c in new Control[] { title, meta, description, counts, views, focus }) { c.Dock = DockStyle.None; Controls.Add(c); }
             description.ContentHeightChanged += delegate { RefreshPage(); };
             this.views.ChangedView = RefreshPage;
             PerformLayout();
@@ -240,16 +240,14 @@ namespace TinyTodo
             {
                 int pad = Ui.U(10), gap = Ui.U(8), width = Math.Max(1, clientWidth - pad * 2), y = pad;
                 title.SetBounds(pad, y, width, Ui.U(42)); title.PerformLayout();
-                var text = title.Controls.OfType<TextBox>().First();
-                int measured = TextRenderer.MeasureText(text.Text, text.Font, new Size(Math.Max(1, text.ClientSize.Width - Ui.U(2)), Int32.MaxValue),
-                    TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Height;
-                if (text.IsHandleCreated) measured = Math.Max(measured, (text.GetLineFromCharIndex(text.TextLength) + 1) * text.Font.Height);
-                int titleHeight = Math.Max(text.Font.Height, measured) + Ui.U(8);
+                var text = title.Controls.OfType<ReadOnlyText>().First();
+                int titleHeight = text.ContentHeight + Ui.U(8);
                 title.Height = titleHeight; y += titleHeight + gap;
                 int line = Math.Max(Ui.U(25), meta.Font.Height + Ui.U(10)); meta.SetBounds(pad, y, width, line); y += line + gap;
                 description.SetBounds(pad, y, width, Math.Max(Ui.U(64), description.Height)); description.PerformLayout();
                 int dh = Math.Max(Ui.U(64), description.NaturalHeight);
                 description.Height = dh; y += dh + gap;
+                focus.SetBounds(pad, y, width, Ui.U(280)); y += focus.Height + gap;
                 int countHeight = Math.Max(Ui.U(25), counts.Font.Height + Ui.U(10)); counts.SetBounds(pad, y, width, countHeight); y += countHeight + gap;
                 views.SetBounds(pad, y, width, views.PageContentHeight); y += views.Height + pad;
                 naturalHeight = y; return y;
@@ -257,7 +255,7 @@ namespace TinyTodo
             finally { arranging = false; }
         }
     }
-    internal enum Glyph { Minus, Plus, Eye, Track, Float, Settings, Close, Down, Left, Right }
+    internal enum Glyph { Minus, Plus, Eye, Track, Float, Settings, Close, Down, Left, Right, Filter }
     internal class IconButton : SoftButton
     {
         internal Glyph Kind; internal bool Open;
@@ -265,9 +263,17 @@ namespace TinyTodo
         { Kind = glyph; BackColor = Theme.Chrome; AutoSize = false; Size = new Size(Ui.U(30), Ui.U(30)); Margin = new Padding(Ui.U(2)); Padding = Padding.Empty; Cursor = Cursors.Hand; }
         protected override void OnPaint(PaintEventArgs e)
         {
-            base.OnPaint(e); var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+            if (Kind == Glyph.Filter)
+            {
+                g.Clear(BackColor);
+                if (hovered || pressed || Open || (Focused && ShowFocusCues))
+                    using (var path = Theme.Rounded(new RectangleF(Ui.U(1), Ui.U(2), Width - Ui.U(2), Height - Ui.U(4)), Ui.U(5)))
+                    using (var fill = new SolidBrush(Theme.Mix(Theme.Ink, BackColor, pressed ? .13F : .07F))) g.FillPath(fill, path);
+            }
+            else base.OnPaint(e);
             var state = g.Save(); g.TranslateTransform(Width / 2F, Height / 2F); g.ScaleTransform(Ui.Scale, Ui.Scale);
-            using (var p = new Pen(Theme.Ink, 1.45F))
+            using (var p = new Pen(Theme.Ink, Kind == Glyph.Filter ? 1.25F : 1.45F))
             {
                 p.StartCap = p.EndCap = LineCap.Round; p.LineJoin = LineJoin.Round;
                 if (Kind == Glyph.Plus || Kind == Glyph.Minus) { g.DrawLine(p, -6, 0, 6, 0); if (Kind == Glyph.Plus) g.DrawLine(p, 0, -6, 0, 6); }
@@ -280,6 +286,7 @@ namespace TinyTodo
                 else if (Kind == Glyph.Track) { g.DrawEllipse(p, -4, -4, 8, 8); g.DrawLine(p, -7, 0, -3, 0); g.DrawLine(p, 3, 0, 7, 0); g.DrawLine(p, 0, -7, 0, -3); g.DrawLine(p, 0, 3, 0, 7); }
                 else if (Kind == Glyph.Float) { using (var path = Theme.Rounded(new RectangleF(-6, -5, 12, 10), 2)) g.DrawPath(p, path); g.DrawLine(p, -3, 2, 3, 2); g.DrawLine(p, 2, -8, 2, -6); g.DrawLine(p, 0, -7, 4, -7); }
                 else if (Kind == Glyph.Settings) { g.DrawEllipse(p, -4, -4, 8, 8); g.DrawEllipse(p, -1, -1, 2, 2); for (int i = 0; i < 8; i++) { double a = i * Math.PI / 4; g.DrawLine(p, (float)Math.Cos(a) * 5, (float)Math.Sin(a) * 5, (float)Math.Cos(a) * 7, (float)Math.Sin(a) * 7); } }
+                else if (Kind == Glyph.Filter) { g.DrawLine(p, -6, -4, 6, -4); g.DrawLine(p, -4, 0, 4, 0); g.DrawLine(p, -1.5F, 4, 1.5F, 4); }
                 else if (Kind == Glyph.Down) g.DrawLines(p, new PointF[] { new PointF(-4,-2), new PointF(0,2), new PointF(4,-2) });
                 else { float dir = Kind == Glyph.Left ? -1 : 1; g.DrawLines(p, new PointF[] { new PointF(-dir*2,-4), new PointF(dir*2,0), new PointF(-dir*2,4) }); }
             }
@@ -561,19 +568,19 @@ namespace TinyTodo
         private readonly Timer timer = new Timer { Interval = 750 };
         private readonly Timer monitor = new Timer { Interval = 100 };
         private readonly System.Diagnostics.Stopwatch outside = new System.Diagnostics.Stopwatch();
-        private Control source; private Todo task; private Point point; private HoverCard card;
+        private Control source; private Todo task; private HoverCard card;
         private Func<Point, bool> hitTest;
         internal HoverMarkdown()
         {
             timer.Tick += delegate { timer.Stop(); Show(); };
             monitor.Tick += delegate { CheckPointer(); };
         }
-        internal void Schedule(Control source, Todo task, Point point, Func<Point, bool> hitTest = null)
+        internal void Schedule(Control source, Todo task, Func<Point, bool> hitTest = null)
         {
             // Returning from the card to its original task must not rebuild the popup.
             if (card != null && !card.IsDisposed && this.source == source && this.task.Id == task.Id)
             { this.hitTest = hitTest; outside.Reset(); return; }
-            Hide(); this.source = source; this.task = task; this.point = point; this.hitTest = hitTest;
+            Hide(); this.source = source; this.task = task; this.hitTest = hitTest;
             timer.Start();
         }
         private bool SourceAvailable()
@@ -591,8 +598,12 @@ namespace TinyTodo
         private void Show()
         {
             if (!SourceAvailable() || task == null || !DesktopActivity.OwnsForeground || !OverSource()) return;
+            Point point = Cursor.Position;
             card = new HoverCard(task); Rectangle area = Screen.FromPoint(point).WorkingArea;
-            card.Location = new Point(Math.Max(area.Left, Math.Min(point.X + Ui.U(12), area.Right - card.Width)), Math.Max(area.Top, Math.Min(point.Y + Ui.U(20), area.Bottom - card.Height)));
+            int gap = Ui.U(8), x = point.X + gap, y = point.Y + gap;
+            if (x + card.Width > area.Right) x = point.X - gap - card.Width;
+            if (y + card.Height > area.Bottom) y = point.Y - gap - card.Height;
+            card.Location = new Point(Math.Max(area.Left, Math.Min(x, area.Right - card.Width)), Math.Max(area.Top, Math.Min(y, area.Bottom - card.Height)));
             var shown = card;
             card.FormClosed += delegate
             {
@@ -607,7 +618,7 @@ namespace TinyTodo
             if (card.Bounds.Contains(Cursor.Position) || OverSource()) { outside.Reset(); return; }
             // Allow crossing the small gap between the task and the popup.
             if (!outside.IsRunning) outside.Start();
-            else if (outside.ElapsedMilliseconds >= 180) Hide();
+            else if (outside.ElapsedMilliseconds >= 550) Hide();
         }
         internal void Leave()
         {
@@ -641,7 +652,12 @@ namespace TinyTodo
                 ClientSize = new Size(Ui.U(330), Ui.U(210)); BackColor = Theme.Canvas; Padding = new Padding(Ui.U(6));
                 var title = new ReadOnlyText { Text = task.Name, ForeColor = Theme.Ink, BackColor = Theme.Canvas, Font = Theme.Font(10, FontStyle.Bold, task.Name), Dock = DockStyle.Top, Height = Ui.U(30), Multiline = true };
                 var preview = new MarkdownView(); viewport = new TextViewport(preview); preview.ShowMarkdown(task.Description);
-                Controls.Add(viewport); Controls.Add(title); Application.AddMessageFilter(this);
+                Controls.Add(viewport); Controls.Add(title);
+                title.CreateControl(); PerformLayout();
+                int titleHeight = title.ContentHeight + Ui.U(8);
+                ClientSize = new Size(ClientSize.Width, ClientSize.Height + titleHeight - title.Height);
+                title.Height = titleHeight;
+                Application.AddMessageFilter(this);
                 using (var path = Theme.Rounded(new RectangleF(0, 0, Width, Height), Ui.U(8))) Region = new Region(path);
             }
         }

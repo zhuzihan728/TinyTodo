@@ -18,6 +18,8 @@ namespace TinyTodo
         public List<string> Prerequisites { get; set; }
         public string CreatedAt { get; set; }
         public string CompletedAt { get; set; }
+        public string SeriesId { get; set; }
+        public RepeatRule Repeat { get; set; }
         public Todo()
         {
             Id = Guid.NewGuid().ToString("N"); Name = ""; Description = "";
@@ -44,6 +46,8 @@ namespace TinyTodo
         public bool HasIconPosition { get; set; }
         public bool DateCountdown { get; set; }
         public bool DateDescending { get; set; }
+        public TaskSort Sort { get; set; }
+        public bool SortDescending { get; set; }
         public string ClockZoneId { get; set; }
     }
 
@@ -74,7 +78,8 @@ namespace TinyTodo
         public int Version { get; set; }
         public List<Todo> Tasks { get; set; }
         public Settings Window { get; set; }
-        public State() { Version = 1; Tasks = new List<Todo>(); Window = new Settings(); }
+        public List<FocusSession> FocusSessions { get; set; }
+        public State() { Version = 2; Tasks = new List<Todo>(); Window = new Settings(); FocusSessions = new List<FocusSession>(); }
     }
 
     public static class Rules
@@ -124,7 +129,7 @@ namespace TinyTodo
         }
         public static void Validate(State state)
         {
-            if (state == null || state.Version != 1 || state.Tasks == null || state.Window == null)
+            if (state == null || (state.Version != 1 && state.Version != 2) || state.Tasks == null || state.Window == null)
                 throw new InvalidOperationException("数据版本或格式不正确。");
             var ids = new HashSet<string>();
             foreach (Todo t in state.Tasks)
@@ -143,6 +148,7 @@ namespace TinyTodo
                     (t.CompletedAt != null && !DateTimeOffset.TryParse(t.CompletedAt, CultureInfo.InvariantCulture, DateTimeStyles.None, out stamp)))
                     throw new InvalidOperationException("任务时间格式不正确。");
             }
+            Productivity.Validate(state);
             foreach (Todo t in state.Tasks)
             {
                 if (t.Prerequisites.Distinct().Count() != t.Prerequisites.Count ||
@@ -163,13 +169,15 @@ namespace TinyTodo
             foreach (string id in t.Prerequisites) Visit(state, Get(state, id), visiting, visited);
             visiting.Remove(t.Id); visited.Add(t.Id);
         }
-        public static void Complete(State state, string id)
+        public static void Complete(State state, string id) { Complete(state, id, DateTimeOffset.Now); }
+        public static void Complete(State state, string id, DateTimeOffset when)
         {
             Todo t = Get(state, id);
             if (t.Done) return;
             var blockers = Blockers(state, t);
             if (blockers.Count > 0) throw new InvalidOperationException("请先完成：" + String.Join("、", blockers.Select(x => x.Name)));
-            t.CompletedAt = DateTime.UtcNow.ToString("o");
+            t.CompletedAt = when.ToUniversalTime().ToString("o");
+            Productivity.AddNext(state, t, when.Date);
         }
         public static void Restore(State state, string id)
         {
@@ -233,7 +241,8 @@ namespace TinyTodo
         public State Current { get; private set; }
         public event EventHandler Changed;
         public string PathName { get { return path; } }
-        public Store(string path) { this.path = path; }
+        public FocusTimer Focus { get; private set; }
+        public Store(string path) { this.path = path; Focus = new FocusTimer(this, () => DateTimeOffset.UtcNow); }
         internal void AdoptPath(string nextPath) { path = nextPath; }
         private static JavaScriptSerializer Serializer()
         {
@@ -242,7 +251,7 @@ namespace TinyTodo
         public static State Read(string file)
         {
             State result = Serializer().Deserialize<State>(File.ReadAllText(file, Encoding.UTF8));
-            Rules.Validate(result); return result;
+            Rules.Validate(result); result.Version = 2; return result;
         }
         public void Load()
         {

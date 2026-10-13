@@ -114,6 +114,15 @@ namespace TinyTodo
             return new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true, Margin = Padding.Empty };
         }
+        internal static void CenterRow(FlowLayoutPanel row)
+        {
+            foreach (Control child in row.Controls)
+            {
+                child.Dock = DockStyle.None; child.Anchor = AnchorStyles.None;
+                child.Margin = new Padding(child.Margin.Left, U(3), child.Margin.Right, U(3));
+                var label = child as Label; if (label != null) label.TextAlign = ContentAlignment.MiddleLeft;
+            }
+        }
         internal static Label Label(string text)
         {
             return new Label { Text = text, AutoSize = true, Dock = DockStyle.Fill, Font = Theme.Font(9.5F, FontStyle.Regular, text),
@@ -258,7 +267,7 @@ namespace TinyTodo
         public MainForm(Store store, DataLocations locations)
         {
             this.store = store; this.locations = locations;
-            Ui.Setup(this, "TinyTodo 3.5.9", 720, 500);
+            Ui.Setup(this, "TinyTodo 3.6.0", 720, 500);
             StartPosition = FormStartPosition.Manual;
             appIcon = MakeIcon(); Icon = appIcon;
             var root = Ui.Root(Ui.Auto(), Ui.Fill(), Ui.Auto());
@@ -273,7 +282,8 @@ namespace TinyTodo
             top.LeftItems.AddRange(new Control[] { currentButton, historyButton, addButton });
             views = new TaskViews(false) { Margin = new Padding(3, 0, 3, 3) }; grid = views.First; top.SetNavigation(views.DetachNavigation());
             views.BeforeTree = delegate { views.SetShowDone(history); };
-            grid.SortDate = delegate { Change(s => s.Window.DateDescending = !s.Window.DateDescending); };
+            grid.SortDate = delegate { Change(s => { s.Window.Sort = TaskSort.Date; s.Window.DateDescending = !s.Window.DateDescending; }); };
+            grid.SortTasks = delegate(TaskSort sort, bool reverse) { Change(s => { s.Window.Sort = sort; s.Window.SortDescending = reverse; if (sort == TaskSort.Date) s.Window.DateDescending = reverse; }); };
             grid.ToggleDateMode = delegate { Change(s => s.Window.DateCountdown = !s.Window.DateCountdown); };
             MinimumSize = SizeFromClientSize(new Size(grid.RequiredWidth + Ui.U(64), Ui.U(280)));
             grid.OpenTask = QueuePreview; grid.ToggleTask = QueueComplete;
@@ -315,7 +325,7 @@ namespace TinyTodo
             menu.Closed += delegate { desktopMenuOpen = false; };
             // The tray release must finish before the popup takes foreground ownership.
             trayIcon = MakeTrayIcon();
-            tray = new NotifyIcon { Icon = trayIcon, Text = "TinyTodo 3.5.9", Visible = true };
+            tray = new NotifyIcon { Icon = trayIcon, Text = "TinyTodo 3.6.0", Visible = true };
             tray.MouseUp += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Right) QueueTrayMenu(Cursor.Position); };
             tray.MouseClick += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) ShowMain(); };
             bubble = new FloatingIcon(ToggleFromBubble, SaveIconPosition, menu);
@@ -327,7 +337,13 @@ namespace TinyTodo
             ResizeEnd += delegate { SavePosition(); };
             Resize += delegate { if (WindowState == FormWindowState.Minimized) Collapse(); };
             FormClosing += delegate(object sender, FormClosingEventArgs e)
-            { SavePosition(); if (!exiting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; TaskWindows.ForgetAutomaticHide(this); Hide(); } };
+            {
+                SavePosition();
+                if (!exiting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; TaskWindows.ForgetAutomaticHide(this); Hide(); return; }
+                try { store.Focus.Stop(); }
+                catch (IOException ex) { e.Cancel = true; exiting = false; ThemedDialog.Notify(this, ex.Message, "专注记录尚未保存"); }
+                catch (UnauthorizedAccessException ex) { e.Cancel = true; exiting = false; ThemedDialog.Notify(this, ex.Message, "专注记录尚未保存"); }
+            };
             KeyPreview = true;
             KeyDown += delegate(object sender, KeyEventArgs e)
             {
@@ -337,7 +353,7 @@ namespace TinyTodo
             timer = new System.Windows.Forms.Timer { Interval = 250 };
             timer.Tick += delegate { UpdateDesktopVisibility(DesktopActivity.ShouldYieldOn(Screen.FromControl(bubble).Bounds)); UpdateClock(); if (today != DateTime.Today) { today = DateTime.Today; Render(); } };
             Microsoft.Win32.SystemEvents.TimeChanged += SystemTimeChanged;
-            timer.Tick += delegate { TaskWindows.UpdateLayers(); };
+            timer.Tick += delegate { TaskWindows.UpdateLayers(); UpdateFocus(); };
             TaskWindows.Watch(store, this, Render);
             timer.Start(); SelectClock(); UpdateClock(); Render();
         }
@@ -352,6 +368,20 @@ namespace TinyTodo
                 if (IsDisposed || Disposing || menu.IsDisposed) return;
                 menu.Show(point);
             }));
+        }
+        private void UpdateFocus()
+        {
+            string taskId = store.Focus.TaskId;
+            bool finished = store.Focus.Running && store.Focus.RemainingSeconds == 0;
+            try { store.Focus.Tick(); }
+            catch (IOException ex) { store.Focus.Hold(); ThemedDialog.Notify(this, ex.Message, "专注记录保存失败，计时已暂停"); }
+            catch (UnauthorizedAccessException ex) { store.Focus.Hold(); ThemedDialog.Notify(this, ex.Message, "专注记录保存失败，计时已暂停"); }
+            if (finished && store.Focus.TaskId == null)
+            {
+                var task = store.Current.Tasks.FirstOrDefault(t => t.Id == taskId);
+                if (task != null) tray.ShowBalloonTip(5000, "专注完成", task.Name, ToolTipIcon.Info);
+            }
+            bubble.SetCountdown(store.Focus.TaskId == null ? null : store.Focus.Paused ? "暂停" : ((store.Focus.RemainingSeconds + 59) / 60) + "分");
         }
         private void SwitchHistory(bool showHistory)
         { views.ClearCompletionFeedback(); history = showHistory; views.SelectView(0); views.SetShowDone(history); Render(); }
@@ -535,12 +565,12 @@ namespace TinyTodo
         private void Render()
         {
             State s = store.Current;
-            var items = Rules.ByDate(s.Tasks.Where(t => t.Done == history), s.Window.DateDescending).ToList();
+            var items = Productivity.Sort(s, history ? Productivity.History(s) : s.Tasks.Where(t => !t.Done)).ToList();
             views.Render(s, null, items);
             currentButton.Text = "待办 " + s.Tasks.Count(t => !t.Done); historyButton.Text = "历史 " + s.Tasks.Count(t => t.Done);
             ((SoftButton)currentButton).SelectedTab = !history; currentButton.Invalidate();
             ((SoftButton)historyButton).SelectedTab = history; historyButton.Invalidate();
-            Text = history ? "TinyTodo 3.5.9 · 历史" : "TinyTodo 3.5.9";
+            Text = history ? "TinyTodo 3.6.0 · 历史" : "TinyTodo 3.6.0";
         }
         private bool Change(Action<State> action)
         { try { store.Change(action); Render(); return true; } catch (Exception ex) { Error(ex); return false; } }
@@ -570,6 +600,15 @@ namespace TinyTodo
         private readonly int[] frameDelays;
         private readonly System.Windows.Forms.Timer animationTimer;
         private int frameIndex;
+        private string countdown;
+        private int CountdownHeight { get { return countdown == null ? 0 : Ui.U(18); } }
+        internal void SetCountdown(string value)
+        {
+            if (countdown == value) return;
+            int bottom = Bottom; countdown = value; AccessibleDescription = value;
+            ClientSize = new Size(animationFrames[0].Width, animationFrames[0].Height + CountdownHeight);
+            Top = bottom - Height; Ui.Fit(this); Invalidate();
+        }
         internal FloatingIcon(Action toggle, Action<Point> save, ContextMenuStrip menu)
         {
             this.toggle = toggle; this.save = save; Icon = Theme.AppIcon;
@@ -615,7 +654,9 @@ namespace TinyTodo
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-            if (animationFrames != null) e.Graphics.DrawImageUnscaled(animationFrames[frameIndex], 0, 0);
+            if (animationFrames != null) e.Graphics.DrawImageUnscaled(animationFrames[frameIndex], 0, CountdownHeight);
+            if (countdown != null) TextRenderer.DrawText(e.Graphics, countdown, Theme.Font(8, FontStyle.Bold, countdown), new Rectangle(0, 0, Width, CountdownHeight), Theme.Ink,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         }
         protected override void OnMouseDown(MouseEventArgs e)
         { base.OnMouseDown(e); if (e.Button == MouseButtons.Left) { down = Cursor.Position; origin = Location; dragging = true; moved = false; Capture = true; } }
@@ -630,7 +671,7 @@ namespace TinyTodo
         {
             base.OnMouseUp(e); if (e.Button != MouseButtons.Left || !dragging) return;
             dragging = false; Capture = false;
-            if (moved) save(Location);
+            if (moved) save(new Point(Left, Top + CountdownHeight));
             else if (ClientRectangle.Contains(e.Location) && !toggleQueued)
             {
                 toggleQueued = true;

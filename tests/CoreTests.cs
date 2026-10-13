@@ -14,12 +14,78 @@ internal static class CoreTests
         try { action(); } catch (InvalidOperationException) { rejected = true; }
         Assert(rejected, name);
     }
+    private static void ProductivityTests(string folder)
+    {
+        var invalid = new State(); invalid.Tasks.Add(null);
+        Reject(() => Rules.Validate(invalid), "null task reports invalid data before recurrence validation");
+        var daily = new RepeatRule { Kind = RepeatKind.Daily };
+        var weekly = new RepeatRule { Kind = RepeatKind.Weekly, Day = 1 };
+        var monthly = new RepeatRule { Kind = RepeatKind.Monthly, Day = 31 };
+        Assert(Productivity.NextDate(daily, new DateTime(2026, 12, 31)) == new DateTime(2027, 1, 1), "daily recurrence crosses year boundary");
+        Assert(Productivity.NextDate(weekly, new DateTime(2026, 10, 12)) == new DateTime(2026, 10, 19), "weekly recurrence advances seven days on its weekday");
+        Assert(Productivity.NextDate(weekly, new DateTime(2026, 10, 13)) == new DateTime(2026, 10, 19), "weekly recurrence selects next specified weekday");
+        Assert(Productivity.NextDate(monthly, new DateTime(2028, 1, 31)) == new DateTime(2028, 2, 29), "monthly recurrence clamps to leap month end");
+        Assert(Productivity.NextDate(monthly, new DateTime(2028, 2, 29)) == new DateTime(2028, 3, 31), "month end clamp does not change intended day");
+        Assert(Productivity.NextDate(monthly, new DateTime(2027, 1, 31)) == new DateTime(2027, 2, 28), "monthly recurrence clamps to ordinary February");
+        var store = new Store(Path.Combine(folder, "productivity.json")); store.Load();
+        var task = new Todo { Name = "Study", Due = "2026-10-10", Important = true, Repeat = daily };
+        var once = new Todo { Name = "Once" };
+        store.Change(s => s.Tasks.AddRange(new[] { task, once }));
+        var now = new DateTimeOffset(2026, 10, 12, 12, 0, 0, TimeSpan.Zero);
+        var timer = new FocusTimer(store, () => now);
+        Reject(() => timer.Start(task.Id, 0), "focus rejects zero minutes");
+        Reject(() => timer.Start(task.Id, 1441), "focus rejects excessive duration");
+        timer.Start(task.Id, 60); now = now.AddHours(1); timer.Tick();
+        Assert(!timer.Running && Productivity.FocusSeconds(store.Current, task) == 3600, "focus deadline records exactly the scheduled duration");
+        store.Change(s => Rules.Complete(s, task.Id, now));
+        var next = store.Current.Tasks.Single(t => !t.Done && t.SeriesId == task.Id);
+        Assert(next.Due == "2026-10-13" && next.Important && next.Name == task.Name, "overdue recurring completion creates one future task with same details");
+        Assert(Productivity.FocusSeconds(store.Current, next) == 3600, "new recurring instance shares earlier focus total");
+        store.Change(s => Rules.Complete(s, task.Id, now));
+        Assert(store.Current.Tasks.Count == 3, "repeated completion does not create duplicate next instance");
+        store.Change(s => Rules.Restore(s, task.Id));
+        store.Change(s => Rules.Complete(s, task.Id, now));
+        Assert(store.Current.Tasks.Count == 3 && Productivity.CompletedCount(store.Current, next) == 1, "undo and redo completion retain one next instance and accurate count");
+        timer.Start(next.Id, 60); now = now.AddMinutes(10); timer.Pause(); now = now.AddHours(4);
+        Assert(timer.RemainingSeconds == 3000 && Productivity.FocusSeconds(store.Current, next) == 4200, "pause excludes time away and retains remaining countdown");
+        timer.Resume(); now = now.AddMinutes(50); timer.Tick();
+        Assert(Productivity.FocusSeconds(store.Current, task) == 7200 && Productivity.FocusSeconds(store.Current, next) == 7200, "old and new instances share cumulative two-hour total");
+        store.Change(s => Rules.Complete(s, next.Id, now.AddDays(1)));
+        Assert(Productivity.History(store.Current).Count() == 1 && Productivity.CompletedCount(store.Current, task) == 2, "history groups recurrence with correct completion count");
+        Reject(() => store.Change(s => s.Tasks[0].Repeat = new RepeatRule { Kind = RepeatKind.Monthly, Day = 0 }), "invalid monthly day is rejected transactionally");
+        var active = store.Current.Tasks.Single(t => !t.Done && t.SeriesId == task.Id);
+        timer.Start(active.Id, 1); now = now.AddSeconds(17); timer.Tick();
+        long checkpoint = Productivity.FocusSeconds(store.Current, active); timer.Tick();
+        Assert(Productivity.FocusSeconds(store.Current, active) == checkpoint, "repeated timer ticks do not double count checkpoint");
+        now = now.AddHours(2); timer.Tick();
+        Assert(Productivity.FocusSeconds(store.Current, active) == 7260, "late timer callback never counts beyond planned duration");
+        DateTime midnight = DateTime.Today.AddDays(1); now = new DateTimeOffset(midnight.AddSeconds(-10), TimeZoneInfo.Local.GetUtcOffset(midnight.AddSeconds(-10)));
+        timer.Start(once.Id, 1); now = now.AddSeconds(20); timer.Stop();
+        var segments = store.Current.FocusSessions.Where(s => s.TaskId == once.Id).ToArray();
+        Assert(segments.Length == 2 && segments.All(s => s.Seconds == 10) && segments.Select(s => s.Day).Distinct().Count() == 2, "focus crossing midnight splits daily totals accurately");
+        timer.Start(once.Id, 1); now = now.AddSeconds(15);
+        using (var locked = new FileStream(store.PathName, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            bool failed = false; try { timer.Tick(); } catch (IOException) { failed = true; }
+            Assert(failed && Productivity.FocusSeconds(store.Current, once) == 20, "failed focus write leaves recorded total unchanged");
+        }
+        timer.Tick(); timer.Stop();
+        Assert(Productivity.FocusSeconds(store.Current, once) == 35, "explicit retry records pending focus interval once");
+        store.Change(s => { s.Window.Sort = TaskSort.Priority; s.Window.SortDescending = false; });
+        Assert(Productivity.Sort(store.Current, store.Current.Tasks).First().Important, "priority sorting puts important tasks first");
+        store.Change(s => s.Window.Sort = TaskSort.FocusTime);
+        Assert(Productivity.Sort(store.Current, store.Current.Tasks).First().SeriesId == task.Id, "focus sorting uses cumulative series time");
+        Reject(() => store.Change(s => s.Window.Sort = (TaskSort)99), "unknown sort setting is rejected at data boundary");
+        var reloaded = new Store(store.PathName); reloaded.Load();
+        Assert(reloaded.Current.Version == 2 && Productivity.FocusSeconds(reloaded.Current, active) == 7260, "recurrence and focus data survive reload with protected schema version");
+    }
     private static int Main()
     {
         string dir = Path.Combine(Path.GetTempPath(), "TinyTodo-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         try
         {
+            ProductivityTests(dir);
             string path = Path.Combine(dir, "tasks.json");
             var store = new Store(path); store.Load();
             Assert(store.Current.Tasks.Count == 0, "empty first run");
@@ -145,7 +211,7 @@ internal static class CoreTests
             Assert(!linkStore.Current.Tasks.Any(t => t.Id == root.Id), "pending tasks can be permanently deleted");
             Assert(!Rules.Get(linkStore.Current, child.Id).Prerequisites.Any() && !Rules.Get(linkStore.Current, newAfter.Id).Prerequisites.Any(), "pending deletion removes every incoming reference");
             var compatible = new Store(linkStore.PathName); compatible.Load();
-            Assert(compatible.Current.Version == 1 && compatible.Current.Tasks.Count == savedCount - 1, "v3 keeps version-one data schema and persists new operations");
+            Assert(compatible.Current.Version == 2 && compatible.Current.Tasks.Count == savedCount - 1, "legacy data upgrades to version two and persists operations");
             Assert(!old.Window.DateCountdown && !old.Window.DateDescending && old.Window.ClockZoneId == null, "legacy settings default to ascending dates and system timezone");
             var dueEarly = new Todo { Name = "early", Due = "2026-09-15" };
             var dueLate = new Todo { Name = "late", Due = "2026-09-30" };

@@ -39,11 +39,36 @@ internal static class UiTests
     private static void AssertColumns(TaskTable grid)
     {
         grid.FitColumns();
-        Assert(grid.Sizing.Width.Select((w, i) => w >= grid.Sizing.Minimum[i]).All(x => x), "all four columns remain above measured minimum");
+        Assert(grid.Sizing.Width.Select((w, i) => w >= grid.Sizing.Minimum[i]).All(x => x), "all three columns remain above measured minimum");
         Assert(grid.Sizing.Width.Sum() == grid.AvailableWidth, "columns fit exactly inside viewport");
         Assert(grid.Sizing.Width[0] == grid.Sizing.Minimum[0], "completion stays fixed");
         Assert(grid.Sizing.Width[0] >= TextRenderer.MeasureText("完成", grid.Font).Width + Ui.U(16), "completion header fits text and custom padding");
-        Assert(grid.GetColumnDisplayRectangle(3, false).Right == grid.AvailableWidth, "status right edge stays pinned");
+        Assert(grid.GetColumnDisplayRectangle(2, false).Right == grid.AvailableWidth, "date right edge stays pinned");
+    }
+    private static void VerifyTableStartup()
+    {
+        using (var host = new AppWindow())
+        using (var table = new TaskTable { Dock = DockStyle.None })
+        {
+            host.ClientSize = new Size(Ui.U(600), Ui.U(400)); host.Controls.Add(table);
+            table.SetBounds(Ui.U(10), host.CaptionHeight + Ui.U(10), Ui.U(560), Ui.U(280));
+            var state = new State();
+            for (int i = 0; i < 40; i++) state.Tasks.Add(new Todo { Name = "启动布局任务 " + i });
+            table.ShowTasks(state, state.Tasks, false);
+            int hiddenWidth = table.AvailableWidth;
+            bool firstShow = true, firstShowFits = false;
+            table.VisibleChanged += delegate { if (table.Visible && firstShow) { firstShow = false; firstShowFits = table.Filter.Right <= table.AvailableWidth - Ui.U(4) && table.Sizing.Width.Sum() == table.AvailableWidth; } };
+            host.Show(); PumpFor(80);
+            Assert(hiddenWidth == table.AvailableWidth, "scrollable table reserves the same header width before and after first show");
+            Assert(!firstShow && firstShowFits, "header contains the filter and all columns as soon as the table becomes visible");
+            host.Hide(); table.ShowTasks(state, state.Tasks, false); host.Show(); PumpFor(80);
+            Assert(table.Filter.Right <= table.AvailableWidth - Ui.U(4), "restoring a populated hidden table keeps the filter inside its header");
+            table.Width -= Ui.U(70); PumpFor(30);
+            Assert(table.Filter.Right <= table.AvailableWidth - Ui.U(4) && table.Sizing.Width.Sum() == table.AvailableWidth, "resizing a scrollable table preserves header alignment");
+            table.ShowTasks(state, state.Tasks.Take(1), false); PumpFor(30);
+            Assert(table.AvailableWidth == table.ClientSize.Width && table.Filter.Right <= table.AvailableWidth - Ui.U(4), "removing the scrollbar restores full header width and inset filter");
+            Capture(host, "header-startup");
+        }
     }
     private static void AssertPreviewTabs(TaskViews views)
     {
@@ -107,6 +132,7 @@ internal static class UiTests
                 host.Show(); host.Activate(); Application.DoEvents();
                 var hover = (HoverMarkdown)typeof(TaskTable).GetField("hoverPreview", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(table);
                 Rectangle cell = table.CellBounds(1, 0); Point local = new Point(cell.Left + Ui.U(25), cell.Top + cell.Height / 2);
+                ClickOwnWindow(host, table.PointToScreen(new Point(Ui.U(15), table.Height - Ui.U(30))));
                 Cursor.Position = table.PointToScreen(local); Mouse(table, "OnMouseMove", MouseButtons.None, local.X, local.Y);
                 PumpFor(500);
                 Assert(HoverWindow(hover) == null, "brief task hover does not open Markdown preview");
@@ -114,8 +140,14 @@ internal static class UiTests
                 Cursor.Position = table.PointToScreen(empty); Mouse(table, "OnMouseMove", MouseButtons.None, empty.X, empty.Y); PumpFor(350);
                 Assert(HoverWindow(hover) == null, "leaving task before dwell cancels the pending preview");
                 Cursor.Position = table.PointToScreen(local); Mouse(table, "OnMouseMove", MouseButtons.None, local.X, local.Y);
+                PumpFor(300);
+                local.X = cell.Right - Ui.U(25);
+                Cursor.Position = table.PointToScreen(local); Mouse(table, "OnMouseMove", MouseButtons.None, local.X, local.Y);
+                Point trigger = Cursor.Position;
                 WaitUntil(() => HoverWindow(hover) != null, "task hover opens Markdown preview after its delay");
-                var card = HoverWindow(hover); PumpFor(800);
+                var card = HoverWindow(hover);
+                Assert(Math.Min(Math.Abs(card.Left - trigger.X), Math.Abs(card.Right - trigger.X)) <= Ui.U(8), "preview follows the latest pointer position within the same task");
+                PumpFor(800);
                 Assert(!card.IsDisposed && card.Visible, "Markdown preview stays open while pointer remains over original task");
                 Cursor.Position = card.PointToScreen(new Point(Ui.U(45), Ui.U(50))); hover.Leave(); PumpFor(450);
                 Assert(!card.IsDisposed && card.Visible, "pointer can enter Markdown card without it closing");
@@ -155,9 +187,9 @@ internal static class UiTests
             Point originalPointer = Cursor.Position;
             try
             {
-                var task = new Todo { Name = "可选择复制的标题", Description = String.Join("\n", Enumerable.Range(1, 60).Select(i => "第 " + i + " 行 Markdown 内容")) };
+                var task = new Todo { Name = String.Concat(Enumerable.Repeat("需要完整换行显示的长标题 Long title ", 5)), Description = String.Join("\n", Enumerable.Range(1, 60).Select(i => "第 " + i + " 行 Markdown 内容")) };
                 Cursor.Position = host.PointToScreen(new Point(Ui.U(20), Ui.U(45)));
-                hover.Schedule(host, task, Cursor.Position);
+                hover.Schedule(host, task);
                 ((Timer)typeof(HoverMarkdown).GetField("timer", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(hover)).Stop();
                 typeof(HoverMarkdown).GetMethod("Show", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(hover, null);
                 var card = (Form)typeof(HoverMarkdown).GetField("card", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(hover);
@@ -179,6 +211,9 @@ internal static class UiTests
                 Assert(markdown.Cursor == Cursors.Default, "non-link preview text uses arrow pointer");
                 var title = Descendants(card).OfType<ReadOnlyText>().Single(); title.SelectAll();
                 Assert(title.SelectedText == task.Name && title.ReadOnly && title.Cursor == Cursors.Default, "hover title is selectable and read-only without editing pointer");
+                int lines = title.GetLineFromCharIndex(title.TextLength) + 1;
+                Assert(lines >= 3 && title.Height >= lines * title.Font.Height && title.Bottom <= markdown.Parent.Top,
+                    "all wrapped hover title lines fit above the Markdown content");
                 var viewport = Descendants(card).OfType<TextViewport>().Single(); viewport.Sync();
                 int maximum = viewport.Scrollbar.Maximum, page = viewport.Scrollbar.Page;
                 viewport.SetPosition(maximum); int bottom = viewport.Position;
@@ -188,6 +223,25 @@ internal static class UiTests
                 Cursor.Position = new Point(card.Right + 20, card.Bottom + 20);
                 Assert(!((IMessageFilter)card).PreFilterMessage(ref wheel), "wheel outside hover card remains with its original target");
                 hover.Hide(); Assert(card.IsDisposed, "closing hover releases its message filter and controls");
+                Point anchor = host.PointToScreen(new Point(Ui.U(45), Ui.U(55)));
+                Cursor.Position = anchor;
+                hover.Schedule(host, task, p => p == host.PointToClient(anchor));
+                WaitUntil(() => HoverWindow(hover) != null, "transition preview opens");
+                card = HoverWindow(hover);
+                Cursor.Position = new Point(anchor.X + Ui.U(4), anchor.Y + Ui.U(4)); hover.Leave(); PumpFor(350);
+                Assert(!card.IsDisposed, "slow crossing of the task-to-preview gap keeps the card open");
+                Cursor.Position = card.PointToScreen(new Point(Ui.U(20), Ui.U(20))); PumpFor(700);
+                Assert(!card.IsDisposed, "entering the preview cancels pending dismissal");
+                Cursor.Position = host.PointToScreen(new Point(Ui.U(5), Ui.U(5)));
+                WaitUntil(() => card.IsDisposed, "moving elsewhere dismisses the preview after the transition grace");
+                Rectangle area = Screen.FromControl(host).WorkingArea;
+                host.Location = new Point(area.Right - host.Width, area.Bottom - host.Height);
+                Cursor.Position = host.PointToScreen(new Point(host.ClientSize.Width - Ui.U(15), host.ClientSize.Height - Ui.U(15)));
+                anchor = Cursor.Position; hover.Schedule(host, task);
+                WaitUntil(() => HoverWindow(hover) != null, "screen-edge preview opens");
+                card = HoverWindow(hover);
+                Assert(area.Contains(card.Bounds) && card.Right <= anchor.X && card.Bottom <= anchor.Y, "screen-edge preview stays nearby and entirely inside the monitor");
+                hover.Hide();
             }
             finally { Cursor.Position = originalPointer; }
         }
@@ -999,6 +1053,100 @@ internal static class UiTests
             }
         }
     }
+    private static void AssertRowCentered(Control row, string name)
+    {
+        var items = row.Controls.Cast<Control>().Where(c => c.Visible && (!(c is Label) || c.Text.Length > 0)).ToArray();
+        double[] centers = items.Select(c => c.Top + c.Height / 2.0).ToArray();
+        Assert(centers.Max() - centers.Min() <= 1, name + " controls and labels share a vertical center");
+    }
+    private static Point savedCatPosition;
+    private static void VerifyProductivity(string folder)
+    {
+        var store = new Store(Path.Combine(folder, "productivity-ui.json")); store.Load();
+        using (var main = new MainForm(store, new DataLocations(folder)))
+        {
+            main.Show(); main.Activate(); PumpFor(100);
+            var editor = TaskWindows.Edit(store, main, null);
+            Descendants(editor).OfType<TextBox>().Single(t => t.MaxLength == 120).Text = "每周学习";
+            var repeat = Descendants(editor).OfType<RepeatPicker>().Single();
+            repeat.Kind.Commit(repeat.Kind.Items[2]); repeat.Day.Commit(repeat.Day.Items[1]);
+            PumpFor(80); AssertRowCentered(repeat, "weekly recurrence");
+            repeat.Kind.Commit(repeat.Kind.Items[3]); PumpFor(50); AssertRowCentered(repeat, "monthly recurrence");
+            repeat.Kind.Commit(repeat.Kind.Items[2]); repeat.Day.Commit(repeat.Day.Items[1]);
+            Capture(editor, "recurring-editor");
+            Descendants(editor).OfType<Button>().Single(b => b.Text == "保存").PerformClick(); PumpFor(150);
+            var task = store.Current.Tasks.Single();
+            Assert(task.Repeat.Kind == RepeatKind.Weekly && task.Repeat.Day == 1 && task.SeriesId == task.Id && task.Due != null,
+                "new editor saves weekly recurrence and an initial due date");
+            var reopened = TaskWindows.Edit(store, main, task.Id);
+            var savedRepeat = Descendants(reopened).OfType<RepeatPicker>().Single().Rule;
+            Assert(savedRepeat.Kind == RepeatKind.Weekly && savedRepeat.Day == 1, "editing a saved recurrence restores its weekday before the window is shown");
+            reopened.Close(); PumpFor(80);
+            var table = Descendants(main).OfType<TaskTable>().Single();
+            Assert(table.Sizing.Width.Length == 3 && table.Filter.Visible && table.ClientRectangle.Contains(table.Filter.Bounds), "three-column task table exposes an unclipped sort button");
+            table.Filter.PerformClick(); PumpFor(50);
+            var menu = (ContextMenuStrip)typeof(TaskTable).GetField("sortMenu", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(table);
+            menu.Items[1].PerformClick(); menu.Close(); PumpFor(80);
+            Assert(store.Current.Window.Sort == TaskSort.Priority, "header sort menu persists priority choice");
+            table.Filter.PerformClick(); menu.Items[5].PerformClick(); menu.Close(); PumpFor(80);
+            Assert(store.Current.Window.SortDescending, "header menu reverses the selected sort order");
+            var actions = TaskActions.Menu(main, table, new Point(10, 10), store, task.Id, delegate { });
+            actions.Items.OfType<ToolStripMenuItem>().Single(i => i.Text == "专注…").PerformClick(); actions.Close(); PumpFor(100);
+            var clock = TaskWindows.Find<FocusForm>(store, f => f.TaskId == task.Id);
+            Assert(clock != null && clock.Visible && main.Enabled, "task menu opens independent focus clock");
+            var panel = Descendants(clock).OfType<FocusPanel>().Single();
+            AssertRowCentered(panel.Start.Parent, "focus actions");
+            var chartBar = Descendants(panel).OfType<ZoneSelector>().Single().Parent; AssertRowCentered(chartBar, "focus chart navigation");
+            Assert(Math.Abs(panel.Minutes.Top + panel.Minutes.Height / 2.0 - panel.Minutes.Parent.Height / 2.0) <= 1, "minutes text is centered inside its input surface");
+            Capture(panel, "focus-empty-aligned");
+            panel.Minutes.Text = "1"; panel.Start.PerformClick(); PumpFor(1100);
+            var bubble = (FloatingIcon)typeof(MainForm).GetField("bubble", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main);
+            AssertRowCentered(panel.Start.Parent, "running focus actions");
+            Assert(store.Focus.Running && bubble.AccessibleDescription == "1分", "focus starts and cat displays minute countdown");
+            int bottom = bubble.Bottom; panel.Start.PerformClick(); PumpFor(300);
+            Assert(store.Focus.Paused && panel.Start.Text == "继续" && bubble.AccessibleDescription == "暂停", "pause control freezes clock and updates cat");
+            panel.Start.PerformClick(); PumpFor(100); panel.Stop.PerformClick(); PumpFor(300);
+            Assert(store.Focus.TaskId == null && Productivity.FocusSeconds(store.Current, task) >= 1 && bubble.Bottom == bottom,
+                "ending focus saves elapsed time and removes countdown without moving cat baseline");
+            clock.Close();
+            using (var catMenu = new ContextMenuStrip())
+            using (var cat = new FloatingIcon(delegate { }, delegate(Point point) { savedCatPosition = point; }, catMenu))
+            {
+                cat.Location = Screen.PrimaryScreen.WorkingArea.Location + new Size(Ui.U(100), Ui.U(100)); cat.Show(); cat.SetCountdown("1分");
+                Point previous = Cursor.Position;
+                try
+                {
+                    Cursor.Position = cat.PointToScreen(new Point(cat.Width / 2, cat.Height / 2));
+                    Mouse(cat, "OnMouseDown", MouseButtons.Left, cat.Width / 2, cat.Height / 2);
+                    Cursor.Position += new Size(Ui.U(20), Ui.U(20)); Mouse(cat, "OnMouseMove", MouseButtons.Left, 10, 10); Mouse(cat, "OnMouseUp", MouseButtons.Left, 10, 10);
+                    cat.SetCountdown(null);
+                    Assert(cat.Location == savedCatPosition, "dragging timed cat persists artwork position without countdown offset");
+                    cat.Top = Screen.PrimaryScreen.WorkingArea.Top; cat.SetCountdown("1分");
+                    Assert(cat.Top >= Screen.PrimaryScreen.WorkingArea.Top, "countdown stays visible when cat starts at top screen edge");
+                }
+                finally { Cursor.Position = previous; }
+            }
+            store.Change(state => {
+                for (int i = 0; i < 9; i++) state.FocusSessions.Add(new FocusSession { Id = "demo-" + i, SeriesId = task.Id, TaskId = task.Id,
+                    Day = DateTime.Today.AddDays(-i).ToString("yyyy-MM-dd"), StartedAt = DateTimeOffset.Now.AddDays(-i).ToString("o"), Seconds = 600 + i * 240 });
+                Rules.Complete(state, task.Id);
+                var next = state.Tasks.Single(t => !t.Done); Rules.Complete(state, next.Id);
+            }); PumpFor(150);
+            Descendants(main).OfType<Button>().First(b => b.Text.StartsWith("历史")).PerformClick(); PumpFor(150);
+            Assert(table.Rows.Count == 1 && table.Rows[0].Count == 2 && table.Rows[0].Task.Name == "每周学习", "history groups recurring completions without changing stored task name");
+            Capture(main, "recurring-history");
+            var active = store.Current.Tasks.Single(t => !t.Done);
+            var preview = TaskWindows.Preview(store, main, active.Id); PumpFor(100);
+            var focus = Descendants(preview).OfType<FocusPanel>().Single();
+            Assert(Productivity.FocusSeconds(store.Current, active) == Productivity.FocusSeconds(store.Current, task), "preview and history share recurring focus total");
+            var surface = Descendants(preview).OfType<ScrollSurface>().First(); surface.SetPosition(Ui.U(180)); PumpFor(100);
+            var period = Descendants(focus).OfType<ZoneSelector>().Single();
+            foreach (var item in period.Items) { period.Commit(item); PumpFor(50); Capture(focus, "focus-chart-" + period.Items.IndexOf(item)); }
+            Capture(preview, "focus-preview");
+            Assert(period.Items.Count == 3 && focus.Start.Enabled && !focus.Stop.Enabled, "focus panel offers week, month and year with idle controls");
+            preview.Close();
+        }
+    }
     private static void VerifyDesktopAdd(Store store)
     {
         using (var main = new MainForm(store, new DataLocations(Path.GetDirectoryName(store.PathName))))
@@ -1348,12 +1496,12 @@ internal static class UiTests
         try
         {
             // Stress the actual layout arithmetic used by mouse dragging, with changing panel sizes.
-            var widths = new ColumnWidths(44, 88, 108, 96); var random = new Random(304);
+            var widths = new ColumnWidths(44, 88, 108); var random = new Random(304);
             bool invariant = true;
             for (int i = 0; i < 20000; i++)
             {
                 int total = widths.MinTotal + random.Next(0, 1000); widths.Fit(total);
-                widths.Drag(random.Next(1, 3), random.Next(-4000, 4001));
+                widths.Drag(1, random.Next(-4000, 4001));
                 invariant &= widths.Width.Sum() == total && widths.Width[0] == 44 && widths.Width.Select((w, col) => w >= widths.Minimum[col]).All(x => x);
             }
             Assert(invariant, "20000 resize/drag operations preserve total, fixed tick and every minimum");
@@ -1366,6 +1514,8 @@ internal static class UiTests
             var c = new Todo { Name = "间接后续 C" }; c.Prerequisites.Add(b.Id);
             var d = new Todo { Name = "共享后续 D" }; d.Prerequisites.Add(a.Id); d.Prerequisites.Add(b.Id);
             store.Change(s => s.Tasks.AddRange(new Todo[] { a, b, c, d }));
+            if (Environment.GetEnvironmentVariable("TINYTODO_HEADER_ONLY") == "1") { VerifyTableStartup(); return 0; }
+            if (Environment.GetEnvironmentVariable("TINYTODO_PRODUCTIVITY_ONLY") == "1") { VerifyProductivity(temp); return 0; }
             if (Environment.GetEnvironmentVariable("TINYTODO_SELECTION_ONLY") == "1") { VerifyTaskSelection(); return 0; }
             if (Environment.GetEnvironmentVariable("TINYTODO_HOVER_ONLY") == "1") { VerifyHoverPersistence(); VerifyHover(); return 0; }
             if (Environment.GetEnvironmentVariable("TINYTODO_PAGE_ONLY") == "1") { VerifyPageInteractions(temp); VerifySessionWindowSizes(temp); VerifyPreviewCanvas(temp); return 0; }
@@ -1411,7 +1561,7 @@ internal static class UiTests
                 Descendants(main).OfType<Button>().First(x => x.Text.StartsWith("待办")).PerformClick();
                 Assert(Descendants(main).OfType<Button>().Any(x => x.AccessibleName == "新增"), "main add action has accessible label");
                 AssertColumns(grid);
-                for (int col = 1; col <= 2; col++)
+                for (int col = 1; col < 2; col++)
                 {
                     int x = grid.Sizing.Width.Take(col + 1).Sum();
                     Mouse(grid, "OnMouseDown", MouseButtons.Left, x, 10);
@@ -1423,7 +1573,7 @@ internal static class UiTests
                     Mouse(grid, "OnMouseUp", MouseButtons.Left, x - 5000, 10); AssertColumns(grid);
                 }
                 main.Size = main.MinimumSize; Application.DoEvents(); AssertColumns(grid);
-                Assert(grid.Sizing.Width[2] == grid.Sizing.Minimum[2] && grid.Sizing.Width[3] == grid.Sizing.Minimum[3], "shrinking window resets date and status to minimum");
+                Assert(grid.Sizing.Width[2] == grid.Sizing.Minimum[2], "shrinking window resets date to minimum");
                 main.ClientSize = new Size(Ui.U(720), Ui.U(500)); Application.DoEvents(); AssertColumns(grid);
                 Assert(!typeof(DataGridView).IsAssignableFrom(grid.GetType()), "task list has no native grid surface");
                 Assert(Theme.Canvas.ToArgb() == ColorTranslator.FromHtml("#FAFAF9").ToArgb(), "main canvas uses near-neutral white");
@@ -1553,7 +1703,7 @@ internal static class UiTests
                 graph.ZoomAt(.25F, anchor);
                 typeof(TaskGraph).GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(graph, new object[] { new KeyEventArgs(Keys.Home) });
                 Assert(graph.Zoom == 1F && graph.ToScreen(new PointF(all.Left + all.Width / 2, all.Top + all.Height / 2)) == reset, "Home restores same initial graph viewport");
-                // Force a vertical scrollbar and confirm it never pushes the status column offscreen.
+                // Force a vertical scrollbar and confirm it never pushes the date column offscreen.
                 store.Change(s => { for (int i = 0; i < 80; i++) s.Tasks.Add(new Todo { Name = "row " + i }); });
                 Descendants(main).OfType<Button>().First(x => x.Text.StartsWith("待办")).PerformClick(); views.SelectView(0); Application.DoEvents(); AssertColumns(grid);
                 Descendants(main).OfType<Button>().First(x => x.Text.StartsWith("历史")).PerformClick(); views.SelectView(2);
@@ -1582,7 +1732,7 @@ internal static class UiTests
                     Color gap = image.GetPixel(cell.Left + 1, cell.Bottom - 1);
                     Assert(corner.R > 200 && corner.G > 200 && corner.B > 200 && gap.R > 200 && gap.G > 200 && gap.B > 200, "rounded header corners and bottom gap repaint without black remnants");
                 }
-                Assert(Descendants(preview).OfType<TextBox>().All(x => x.ReadOnly), "preview stays read-only");
+                Assert(Descendants(preview).OfType<TextBox>().Where(x => x.AccessibleName != "专注分钟数").All(x => x.ReadOnly), "task content in preview stays read-only");
                 var views = Descendants(preview).OfType<TaskViews>().First();
                 Assert(!views.Eye.Visible && Descendants(preview).OfType<Button>().Any(x => x.Text == "完成"), "preview list hides eye and uses completion button");
                 Assert(views.First.Rows[1].Task.Important, "related list carries important marker");
@@ -1664,7 +1814,7 @@ internal static class UiTests
                 Assert(opened == null, "drag selection does not open a link");
                 Assert(!editor.Preview.ActivateLink(editor.Preview.Text.IndexOf("unsafe")), "non-web schemes cannot launch from Markdown");
             }
-            VerifyHoverPersistence(); VerifyHover(); VerifyStableScrolling(); VerifyRefinement(store); VerifyWindowRecovery(store); VerifyCatSettings(store); VerifyDesktopAdd(store); VerifyCatMenuDismissal(store); VerifyTrayMenu(store); VerifyInputIsolation(store); VerifyCompletionFeedback(temp); VerifyModeless(temp); VerifyPageInteractions(temp); VerifySessionWindowSizes(temp); VerifyPreviewCanvas(temp); VerifyTaskSelection();
+            VerifyTableStartup(); VerifyProductivity(temp); VerifyHoverPersistence(); VerifyHover(); VerifyStableScrolling(); VerifyRefinement(store); VerifyWindowRecovery(store); VerifyCatSettings(store); VerifyDesktopAdd(store); VerifyCatMenuDismissal(store); VerifyTrayMenu(store); VerifyInputIsolation(store); VerifyCompletionFeedback(temp); VerifyModeless(temp); VerifyPageInteractions(temp); VerifySessionWindowSizes(temp); VerifyPreviewCanvas(temp); VerifyTaskSelection();
             using (var toggle = new FloatingSwitch())
             {
                 bool mode = false; toggle.Changed = value => { mode = value; toggle.IsFloating = value; };

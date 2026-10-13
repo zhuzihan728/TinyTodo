@@ -9,7 +9,7 @@ if not exist "%TODO_CSC%" (
   exit /b 1
 )
 if not exist bin mkdir bin
-"%TODO_CSC%" /nologo /noconfig /codepage:65001 /langversion:5 /target:exe /out:bin\TinyTodo.Tests.exe /reference:System.dll /reference:System.Core.dll /reference:System.Web.Extensions.dll src\Model.cs src\Markdown.cs src\DataLocations.cs tests\CoreTests.cs
+"%TODO_CSC%" /nologo /noconfig /codepage:65001 /langversion:5 /target:exe /out:bin\TinyTodo.Tests.exe /reference:System.dll /reference:System.Core.dll /reference:System.Web.Extensions.dll src\Model.cs src\Productivity.cs src\Markdown.cs src\DataLocations.cs tests\CoreTests.cs
 if errorlevel 1 (
   pause
   exit /b 1

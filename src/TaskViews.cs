@@ -25,6 +25,7 @@ namespace TinyTodo
                 Renderer = new TaskMenuRenderer();
                 BackColor = Theme.Canvas; ForeColor = Theme.Ink; Font = Theme.Font(9.5F, FontStyle.Regular, "任务列表"); ShowImageMargin = false;
                 Items.Add("编辑", null, delegate { Run(4); });
+                Items.Add("专注…", null, delegate { Run(5); });
                 Items.Add("添加前置", null, delegate { Run(0); });
                 Items.Add("添加后续", null, delegate { Run(1); });
                 important = new ToolStripMenuItem("设为", importantIcon, delegate { Run(3); })
@@ -51,7 +52,8 @@ namespace TinyTodo
                 form.BeginInvoke(new Action(delegate
                 {
                     if (form.IsDisposed || form.Disposing || !data.Current.Tasks.Any(t => t.Id == taskId)) return;
-                    if (action == 4) Edit(form, data, taskId, update);
+                    if (action == 5) TaskActions.Focus(form, data, taskId);
+                    else if (action == 4) Edit(form, data, taskId, update);
                     else if (action == 3) ToggleImportant(form, data, taskId, update);
                     else if (action == 2) Delete(form, data, taskId, update);
                     else AddRelated(form, data, taskId, action == 0, update);
@@ -68,6 +70,11 @@ namespace TinyTodo
         internal static void AddRelated(Form owner, Store store, string id, bool before, Action refresh)
         {
             TaskWindows.Edit(store, owner, null, id, before);
+        }
+        internal static void Focus(Form owner, Store store, string id)
+        {
+            var existing = TaskWindows.Find<FocusForm>(store, f => f.TaskId == id);
+            if (existing != null) TaskWindows.Present(existing, owner); else TaskWindows.Show(store, new FocusForm(store, id), owner);
         }
         internal static void Edit(Form owner, Store store, string id, Action refresh)
         {
@@ -86,6 +93,8 @@ namespace TinyTodo
             Todo t = Rules.Get(store.Current, id);
             int count = store.Current.Tasks.Count(x => x.Prerequisites.Contains(id));
             string prompt = "永久删除“" + t.Name + "”？" + (count > 0 ? "\n" + count + " 个后续任务将解除这项前置关系。" : "") + "\n此操作无法撤销。";
+            if (t.Done && t.SeriesId != null && Productivity.CompletedCount(store.Current, t) > 1)
+                prompt += "\n本次只删除这一次完成记录；其余循环记录和累计专注时间保留。";
             var snapshot = DeleteSignature(store.Current, id);
             ThemedDialog.Ask(owner, store, prompt, "永久删除", delegate
             {
@@ -140,6 +149,7 @@ namespace TinyTodo
         private DateTime today = DateTime.Today;
         private readonly TaskViews views;
         private readonly PreviewLayout page;
+        private readonly FocusPanel focus;
         private bool rendering, queued;
         internal TaskPreview(Store store, string id)
         {
@@ -178,7 +188,8 @@ namespace TinyTodo
             foreach (var table in new TaskTable[] { views.First, views.Second })
             {
                 table.OpenTask = Navigate;
-                table.SortDate = delegate { Queue(delegate { SavePreferences(s => s.DateDescending = !s.DateDescending); }); };
+                table.SortDate = delegate { Queue(delegate { SavePreferences(s => { s.Sort = TaskSort.Date; s.DateDescending = !s.DateDescending; }); }); };
+                table.SortTasks = delegate(TaskSort sort, bool reverse) { Queue(delegate { SavePreferences(s => { s.Sort = sort; s.SortDescending = reverse; if (sort == TaskSort.Date) s.DateDescending = reverse; }); }); };
                 table.ToggleDateMode = delegate { Queue(delegate { SavePreferences(s => s.DateCountdown = !s.DateCountdown); }); };
                 table.ToggleTask = delegate(string taskId) { Queue(delegate { Toggle(taskId); }); };
                 var source = table;
@@ -189,7 +200,8 @@ namespace TinyTodo
             views.Graph.OpenTask = Navigate;
             views.Graph.ToggleTask = delegate(string taskId) { Queue(delegate { Toggle(taskId); }); };
             views.Graph.TaskMenu = delegate(string taskId, Point point) { TaskActions.Menu(this, views.Graph, point, store, taskId, Render); };
-            root.Bind(titleRow, meta, description, counts, views);
+            focus = new FocusPanel(store);
+            root.Bind(titleRow, meta, description, counts, views, focus);
             Ui.FixedPage(this, new ScrollSurface(root, 0) { WholePageWheel = true }, bar, true); KeyPreview = true;
             KeyDown += delegate(object sender, KeyEventArgs e)
             {
@@ -227,6 +239,7 @@ namespace TinyTodo
             rendering = true;
             try
             {
+                focus.Bind(id);
                 title.Text = t.Name; title.Font = Theme.Font(14F, FontStyle.Bold, t.Name); description.ShowMarkdown(t.Description);
                 titleIcon.Size = new Size((int)Math.Round(Ui.U(12) * title.Font.SizeInPoints / 9.5F), title.Font.Height);
                 titleIcon.Invalidate();
@@ -277,6 +290,7 @@ namespace TinyTodo
         internal bool Before { get { return before; } }
         private readonly TextBox nameBox, descriptionBox;
         private readonly DateInput date;
+        private readonly RepeatPicker repeat;
         private readonly TaskChoices prerequisites;
         private sealed class Choice
         {
@@ -343,13 +357,14 @@ namespace TinyTodo
             this.anchor = anchor; this.before = before;
             this.store = store; id = task == null ? null : task.Id;
             Ui.Setup(this, task == null ? (anchor == null ? "添加任务" : before ? "添加前置" : "添加后续") : "编辑任务", 600, 710);
-            var root = Ui.Root(Ui.Auto(), Ui.Auto(), Ui.Auto(), Ui.Auto(), Ui.Auto(),
+            var root = Ui.Root(Ui.Auto(), Ui.Auto(), Ui.Auto(), Ui.Auto(), Ui.Auto(), Ui.Auto(),
                 new RowStyle(SizeType.Absolute, Ui.U(210)), Ui.Auto(), Ui.Fill(), Ui.Auto());
             nameBox = new TextBox { Dock = DockStyle.Top, MaxLength = 120, Text = task == null ? "" : task.Name };
             date = new DateInput { Dock = DockStyle.Top };
             if (task != null && task.Due != null)
                 date.Value = DateTime.ParseExact(task.Due, "yyyy-MM-dd", CultureInfo.InvariantCulture);
             date.Checked = task != null && task.Due != null;
+            repeat = new RepeatPicker(task == null ? null : task.Repeat);
             descriptionBox = new TextBox { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true,
                 MaxLength = 10000, ScrollBars = ScrollBars.Vertical, Text = task == null ? "" : task.Description };
             var descriptionTabs = new MarkdownEditor(descriptionBox);
@@ -374,9 +389,10 @@ namespace TinyTodo
             actions.Controls.AddRange(new Control[] { save, cancel }); AcceptButton = save; CancelButton = cancel;
             root.Controls.Add(Ui.Label("任务名称 *"), 0, 0); root.Controls.Add(new InputSurface(nameBox), 0, 1);
             root.Controls.Add(Ui.Label("日期"), 0, 2); root.Controls.Add(date, 0, 3);
-            root.Controls.Add(Ui.Label("Markdown"), 0, 4); root.Controls.Add(descriptionTabs, 0, 5);
-            root.Controls.Add(Ui.Label(task != null && task.Done ? "前置任务（已完成）" : "前置任务"), 0, 6);
-            root.Controls.Add(InputSurface.Wrap(prerequisites), 0, 7); root.Controls.Add(actions, 0, 8); Ui.ScrollRoot(this, root, 650);
+            root.Controls.Add(repeat, 0, 4);
+            root.Controls.Add(Ui.Label("Markdown"), 0, 5); root.Controls.Add(descriptionTabs, 0, 6);
+            root.Controls.Add(Ui.Label(task != null && task.Done ? "前置任务（已完成）" : "前置任务"), 0, 7);
+            root.Controls.Add(InputSurface.Wrap(prerequisites), 0, 8); root.Controls.Add(actions, 0, 9); Ui.ScrollRoot(this, root, 650);
             TaskWindows.Watch(store, this, RefreshChoices);
             Shown += delegate { Ui.Fit(this); nameBox.Focus(); nameBox.SelectionStart = nameBox.TextLength; };
         }
@@ -423,6 +439,12 @@ namespace TinyTodo
                     Todo t = id == null ? new Todo() : Rules.Get(s, id);
                     t.Name = nameBox.Text.Trim(); t.Description = descriptionBox.Text;
                     t.Due = date.Checked ? date.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : null;
+                    t.Repeat = repeat.Rule;
+                    if (t.Repeat != null)
+                    {
+                        t.SeriesId = Productivity.Series(t);
+                        if (t.Due == null) t.Due = Productivity.NextDate(t.Repeat, DateTime.Today.AddDays(-1)).ToString("yyyy-MM-dd");
+                    }
                     if (!t.Done) t.Prerequisites = selected;
                     if (id == null) { if (anchor == null) s.Tasks.Add(t); else Rules.AddRelated(s, t, anchor, before); }
                 };

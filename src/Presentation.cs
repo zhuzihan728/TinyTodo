@@ -71,6 +71,16 @@ namespace TinyTodo
         [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool HideCaret(IntPtr handle);
         internal ReadOnlyText()
         { ReadOnly = true; BorderStyle = BorderStyle.None; Cursor = Cursors.Default; HideSelection = false; }
+        internal int ContentHeight
+        {
+            get
+            {
+                int measured = TextRenderer.MeasureText(Text, Font, new Size(Math.Max(1, ClientSize.Width - Ui.U(2)), Int32.MaxValue),
+                    TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Height;
+                if (IsHandleCreated) measured = Math.Max(measured, (GetLineFromCharIndex(TextLength) + 1) * Font.Height);
+                return Math.Max(Font.Height, measured);
+            }
+        }
         protected override void WndProc(ref Message message)
         {
             if (message.Msg == 0x20) { Cursor.Current = Cursors.Default; message.Result = new IntPtr(1); return; }
