@@ -15,6 +15,11 @@ internal static class CaptureDocs
         using (var bitmap = new Bitmap(form.Width, form.Height))
         { form.DrawToBitmap(bitmap, form.ClientRectangle); bitmap.Save(Path.Combine("docs/screenshots", name + ".png")); }
     }
+    private static void Settle()
+    {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        while (watch.ElapsedMilliseconds < 650) { Application.DoEvents(); System.Threading.Thread.Sleep(10); }
+    }
     private static void SaveCatToggle()
     {
         using (var canvas = new Bitmap(Ui.U(172), Ui.U(54)))
@@ -52,6 +57,8 @@ internal static class CaptureDocs
         using (var main = new MainForm(store, new DataLocations(root)))
         {
             main.Show(); main.Activate(); Save(main, "tasks");
+            store.Focus.Start(draft.Id, 25); Settle(); Save(main, "countdown");
+            store.Focus.Stop(); Settle();
             var views = Children(main).OfType<TaskViews>().Single();
             views.SelectView(2); Application.DoEvents();
             views.Graph.ZoomAt(.72F, new Point(views.Graph.Width / 2, views.Graph.Height / 2));
@@ -66,9 +73,10 @@ internal static class CaptureDocs
             settings.AddBlacklist(new ProgramEntry { Name = "Outlook", Executable = "OUTLOOK.exe" });
             settings.Show(); settings.Activate(); Application.DoEvents();
             Children(settings).OfType<TextBox>().Single(t => t.ReadOnly && t.Multiline).Text = @"C:\Users\You\AppData\Local\TinyTodo";
-            var settle = System.Diagnostics.Stopwatch.StartNew();
-            while (settle.ElapsedMilliseconds < 650) { Application.DoEvents(); System.Threading.Thread.Sleep(10); }
-            Save(settings, "settings");
+            Settle(); Save(settings, "settings");
+            Children(settings).OfType<TextBox>().Single(t => t.AccessibleName == "GitHub 同步仓库").Text = "https://github.com/your-name/TinyTodo-storage";
+            Children(settings).OfType<ScrollSurface>().Single().SetPosition(Int32.MaxValue);
+            Settle(); Save(settings, "sync");
         }
     }
 }

@@ -85,7 +85,7 @@ internal static class CoreTests
         Directory.CreateDirectory(dir);
         try
         {
-            ProductivityTests(dir);
+            ProductivityTests(dir); SyncTests.Run(dir);
             string path = Path.Combine(dir, "tasks.json");
             var store = new Store(path); store.Load();
             Assert(store.Current.Tasks.Count == 0, "empty first run");

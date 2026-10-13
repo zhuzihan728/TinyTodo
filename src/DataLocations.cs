@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -147,6 +147,11 @@ namespace TinyTodo
                     continue; // An earlier cleanup may already have removed its marker.
                 }
                 foreach (string file in TaskFiles(directory)) File.Delete(file);
+            }
+            foreach (string suffix in new string[] { "", ".bak", ".tmp" })
+            {
+                string syncFile = Path.Combine(MetadataDirectory, "sync-state.json" + suffix);
+                if (File.Exists(syncFile)) File.Delete(syncFile);
             }
             // Only remove the locator once every accessible registered location succeeded.
             foreach (string directory in KnownLocations())

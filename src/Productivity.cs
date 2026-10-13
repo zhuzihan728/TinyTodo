@@ -115,6 +115,7 @@ namespace TinyTodo
         public string TaskId { get; private set; }
         public bool Running { get { return TaskId != null && !Paused; } }
         public bool Paused { get { return pausedAt.HasValue; } }
+        public int DurationSeconds { get { return duration; } }
         public int RemainingSeconds { get { return TaskId != null ? Math.Max(0, duration - Elapsed) : 0; } }
         private int Elapsed { get { return Math.Min(duration, Math.Max(0, (int)((pausedAt ?? now()) - started).TotalSeconds)); } }
         public FocusTimer(Store store, Func<DateTimeOffset> now) { this.store = store; this.now = now; }

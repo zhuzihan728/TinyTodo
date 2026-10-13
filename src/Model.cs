@@ -46,6 +46,8 @@ namespace TinyTodo
         public bool HasIconPosition { get; set; }
         public bool DateCountdown { get; set; }
         public bool DateDescending { get; set; }
+        public string SyncRepository { get; set; }
+        public string SyncTokenVariable { get; set; }
         public TaskSort Sort { get; set; }
         public bool SortDescending { get; set; }
         public string ClockZoneId { get; set; }

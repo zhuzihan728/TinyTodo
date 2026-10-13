@@ -6,6 +6,81 @@ using System.Windows.Forms;
 
 namespace TinyTodo
 {
+    internal static class CountdownBadge
+    {
+        internal static Size Size { get { return new Size(Ui.U(112), Ui.U(30)); } }
+        internal static string Text(int seconds)
+        { return (seconds / 3600).ToString("00") + ":" + (seconds % 3600 / 60).ToString("00") + ":" + (seconds % 60).ToString("00"); }
+        internal static void Draw(Graphics g, Rectangle bounds, int remaining, int duration, bool paused)
+        {
+            var state = g.Save(); g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            float stroke = Ui.Scale;
+            var outline = new RectangleF(bounds.X + stroke, bounds.Y + stroke, bounds.Width - 2 * stroke, bounds.Height - 2 * stroke);
+            using (var path = Theme.Rounded(outline, outline.Height / 2))
+            using (var fill = new SolidBrush(Theme.Canvas))
+            using (var pen = new Pen(Theme.Border, stroke))
+            { g.FillPath(fill, path); g.DrawPath(pen, path); }
+            int diameter = Ui.U(20);
+            var dial = new Rectangle(bounds.Left + Ui.U(6), bounds.Top + (bounds.Height - diameter) / 2, diameter, diameter);
+            using (var fill = new SolidBrush(Theme.Done)) g.FillEllipse(fill, dial);
+            float sweep = duration == 0 ? 0 : 360F * remaining / duration;
+            using (var fill = new SolidBrush(paused ? Theme.PaletteTaupe : Theme.AddAction))
+            { if (sweep >= 360) g.FillEllipse(fill, dial); else if (sweep > 0) g.FillPie(fill, dial, -90, sweep); }
+            using (var pen = new Pen(Theme.Latte, stroke)) g.DrawEllipse(pen, dial);
+            if (paused)
+                using (var pen = new Pen(Theme.Ink, Ui.U(2)))
+                {
+                    int center = dial.Left + dial.Width / 2;
+                    g.DrawLine(pen, center - Ui.U(3), dial.Top + Ui.U(6), center - Ui.U(3), dial.Bottom - Ui.U(6));
+                    g.DrawLine(pen, center + Ui.U(3), dial.Top + Ui.U(6), center + Ui.U(3), dial.Bottom - Ui.U(6));
+                }
+            var text = new Rectangle(dial.Right + Ui.U(5), bounds.Top, bounds.Right - dial.Right - Ui.U(12), bounds.Height);
+            TextRenderer.DrawText(g, Text(remaining), Theme.Font(10, FontStyle.Regular, "00:00:00"), text, Theme.Ink,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+            g.Restore(state);
+        }
+    }
+    internal sealed class FocusBanner : Control
+    {
+        private string taskName;
+        private int remaining, duration;
+        private bool paused;
+        private readonly ToolTip tip = new ToolTip();
+        internal FocusBanner()
+        {
+            Height = Ui.U(42); Dock = DockStyle.Fill; Margin = new Padding(Ui.U(3), 0, Ui.U(3), Ui.U(6));
+            DoubleBuffered = true; BackColor = Theme.Canvas; Cursor = Cursors.Hand; Visible = false;
+            AccessibleName = "当前专注任务"; AccessibleRole = AccessibleRole.PushButton; TabStop = true;
+        }
+        internal void Update(Todo task, int seconds, int total, bool isPaused)
+        {
+            string name = task == null ? null : task.Name;
+            if (taskName == name && remaining == seconds && duration == total && paused == isPaused) return;
+            if (taskName != name) tip.SetToolTip(this, name);
+            taskName = name; remaining = seconds; duration = total; paused = isPaused; Visible = task != null;
+            AccessibleDescription = task == null ? null : (paused ? "已暂停 · " : "正在专注 · ") + name + " · " + CountdownBadge.Text(seconds);
+            Invalidate();
+        }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e); if (taskName == null) return;
+            var g = e.Graphics; g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using (var path = Theme.Rounded(new RectangleF(1, 1, Width - 3, Height - 3), Ui.U(9)))
+            using (var fill = new SolidBrush(Theme.TaskTint))
+            using (var pen = new Pen(Focused ? Theme.Latte : Theme.Border, Ui.Scale))
+            { g.FillPath(fill, path); g.DrawPath(pen, path); }
+            var badge = new Rectangle(Width - CountdownBadge.Size.Width - Ui.U(7), (Height - CountdownBadge.Size.Height) / 2, CountdownBadge.Size.Width, CountdownBadge.Size.Height);
+            CountdownBadge.Draw(g, badge, remaining, duration, paused);
+            var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix;
+            TextRenderer.DrawText(g, paused ? "已暂停" : "正在专注", Theme.Font(9, FontStyle.Regular, "正在专注"), new Rectangle(Ui.U(12), 0, Ui.U(56), Height), Theme.Muted, flags);
+            TextRenderer.DrawText(g, taskName, Theme.Font(10.5F, FontStyle.Bold, taskName), new Rectangle(Ui.U(70), 0, Math.Max(0, badge.Left - Ui.U(80)), Height), Theme.Ink, flags);
+        }
+        protected override void OnKeyDown(KeyEventArgs e)
+        { base.OnKeyDown(e); if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space) { e.Handled = e.SuppressKeyPress = true; OnClick(EventArgs.Empty); } }
+        protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+        protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+        protected override void Dispose(bool disposing) { if (disposing) tip.Dispose(); base.Dispose(disposing); }
+    }
     internal sealed class RepeatPicker : FlowLayoutPanel
     {
         internal readonly ZoneSelector Kind = new ZoneSelector { AccessibleName = "循环频率" };
@@ -81,7 +156,7 @@ namespace TinyTodo
             bool active = store.Focus.TaskId != null, own = store.Focus.TaskId == taskId;
             Start.Enabled = !task.Done && (!active || own); Stop.Enabled = own; Minutes.Enabled = !own;
             Start.Text = own ? (store.Focus.Paused ? "继续" : "暂停") : "开始专注";
-            remaining.Text = own ? (store.Focus.RemainingSeconds / 60).ToString("00") + ":" + (store.Focus.RemainingSeconds % 60).ToString("00") : active ? "其他任务正在专注" : "";
+            remaining.Text = own ? CountdownBadge.Text(store.Focus.RemainingSeconds) : active ? "其他任务正在专注" : "";
             chart.Invalidate();
         }
         protected override void Dispose(bool disposing) { if (disposing) timer.Dispose(); base.Dispose(disposing); }

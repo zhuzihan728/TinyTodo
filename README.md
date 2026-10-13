@@ -1,6 +1,6 @@
 ﻿# TinyTodo
 
-Windows 任务管理应用，支持任务依赖、循环任务和专注计时。
+Windows 任务管理应用，支持任务依赖、循环任务、专注计时和 GitHub 私有仓库同步。
 
 [下载安装包](https://github.com/zhuzihan728/TinyTodo/releases/latest) · [构建与测试](docs/BUILD.md)
 
@@ -10,9 +10,11 @@ Windows 任务管理应用，支持任务依赖、循环任务和专注计时。
 
 ![任务列表](docs/screenshots/tasks.png)
 
-右键任务 → 专注，设定分钟数后开始，可暂停和继续。猫猫上方显示倒数；每日统计支持周、月、年，循环任务共享累计时间。
+右键任务 → 专注，设定分钟数后开始，可暂停和继续。主页显示当前任务，猫猫上方显示胶囊倒计时；每日统计支持周、月、年，循环任务共享累计时间。
 
-![专注计时](docs/screenshots/focus.png)
+![当前专注](docs/screenshots/countdown.png)
+
+![专注统计](docs/screenshots/focus.png)
 
 树状依赖关系、任务预览与 Markdown 描述。
 
@@ -26,6 +28,10 @@ Windows 任务管理应用，支持任务依赖、循环任务和专注计时。
 
 ![悬浮动画](assets/floating-icon.gif)
 
-跨设备 GitHub 自动同步及 macOS／Linux 支持见[待办](docs/ROADMAP.md)。
+设置中填写 GitHub 私有仓库链接，启动自动 Pull，任务更新自动 Push，也可手动同步。Token 环境变量名留空时使用本机已有 Git 登录，详见[同步设置](docs/SYNC.md)。
+
+![同步设置](docs/screenshots/sync.png)
+
+macOS／Linux 应用见[待办](docs/ROADMAP.md)。
 
 > Disclaimer：本项目全部使用 GPT 制作，图片也由 GPT 生成。

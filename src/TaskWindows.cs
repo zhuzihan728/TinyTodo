@@ -75,7 +75,7 @@ namespace TinyTodo
             if (existing != null) { Present(existing, origin); return existing; }
             var preview = new TaskPreview(store, id); Show(store, preview, origin); return preview;
         }
-        internal static bool CanChange(Store store, Action<State> change, Form origin, TaskEditor except = null)
+        internal static bool CanChange(Store store, Action<State> change, Form origin, TaskEditor except = null, bool feedback = true)
         {
             var editors = windows.Where(e => e.Store == store).Select(e => e.Form).OfType<TaskEditor>().Where(e => e != except && !e.IsDisposed).ToArray();
             if (editors.Length == 0) return true;
@@ -83,7 +83,7 @@ namespace TinyTodo
             State next = serializer.Deserialize<State>(serializer.Serialize(store.Current));
             change(next);
             foreach (var editor in editors)
-                if (editor.Conflicts(store.Current, next)) { Feedback(origin, editor); return false; }
+                if (editor.Conflicts(store.Current, next)) { if (feedback) Feedback(origin, editor); return false; }
             return true;
         }
         private static void Feedback(Form origin, TaskEditor editor)

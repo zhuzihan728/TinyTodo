@@ -1060,6 +1060,81 @@ internal static class UiTests
         Assert(centers.Max() - centers.Min() <= 1, name + " controls and labels share a vertical center");
     }
     private static Point savedCatPosition;
+    private static void VerifySync(string folder)
+    {
+        var locations = new DataLocations(Path.Combine(folder, "sync-ui")); locations.Load();
+        var store = new Store(locations.TaskPath); store.Load();
+        store.Change(s => { s.Window.SyncRepository = "https://github.com/example/tasks"; s.Window.X = 42; });
+        var task = new Todo { Name = "云端任务" };
+        var remote = new SyncTests.MemoryRemote { Sha = "initial" }; remote.Data.Tasks.Add(task);
+        using (var main = new MainForm(store, locations, (repo, variable) => remote))
+        {
+            var sync = (SyncController)typeof(MainForm).GetField("sync", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main);
+            main.Show(); main.Activate();
+            WaitUntil(() => !sync.Busy && store.Current.Tasks.Count == 1, "startup automatically pulls remote tasks without blocking the window");
+            Assert(store.Current.Tasks[0].Id == task.Id && store.Current.Window.X == 42, "startup pull preserves device settings");
+            int reads = remote.Reads; store.Change(s => s.Window.IconX = 123); PumpFor(750);
+            Assert(remote.Reads == reads, "window and cat position changes do not trigger data pushes");
+            var added = new Todo { Name = "本机新增" }; store.Change(s => s.Tasks.Add(added));
+            WaitUntil(() => !sync.Busy && remote.Data.Tasks.Count == 2, "saving a local task automatically pushes in background");
+            main.OpenSettings(); var settings = TaskWindows.Find<SettingsForm>(store, f => true);
+            var controls = Descendants(settings).OfType<SyncSettings>().Single();
+            var page = Descendants(settings).OfType<ScrollSurface>().First(); page.SetPosition(page.Scrollbar.Maximum); PumpFor(100);
+            Assert(controls.Repository.Text == "https://github.com/example/tasks" && controls.Variable.Text == "", "sync settings show repository and empty Git-credential fallback field");
+            AssertRowCentered(controls.Push.Parent, "sync action row");
+            Assert(controls.Push.Visible && controls.Pull.Visible && controls.RectangleToScreen(controls.ClientRectangle).Bottom <= settings.RectangleToScreen(settings.ClientRectangle).Bottom, "sync controls remain reachable at settings scroll bottom");
+            Capture(settings, "sync-settings");
+            remote.Data.Tasks.Single(t => t.Id == task.Id).Description = "来自另一台设备";
+            controls.Pull.PerformClick();
+            WaitUntil(() => !sync.Busy && store.Current.Tasks.Single(t => t.Id == task.Id).Description == "来自另一台设备", "manual Pull retrieves another device edit");
+            var editor = TaskWindows.Edit(store, main, task.Id);
+            remote.Data.Tasks.Single(t => t.Id == task.Id).Name = "远端改名";
+            sync.Request(SyncAction.Pull);
+            WaitUntil(() => !sync.Busy && sync.Status.Contains("正在编辑"), "pull defers changes to an open task draft");
+            Assert(!editor.IsDisposed && store.Current.Tasks.Single(t => t.Id == task.Id).Name == "云端任务", "background sync preserves the active draft and existing task");
+            editor.Close(); sync.Request(SyncAction.Pull);
+            WaitUntil(() => !sync.Busy && store.Current.Tasks.Single(t => t.Id == task.Id).Name == "远端改名", "pull applies after the conflicting editor closes");
+            remote.Data.Tasks.Single(t => t.Id == task.Id).Name = "另一端再次改名";
+            store.Change(s => s.Tasks.Single(t => t.Id == task.Id).Name = "本机再次改名");
+            WaitUntil(() => !sync.Busy && sync.Conflict, "same-field edits pause automatic sync with conflict status");
+            page.SetPosition(page.Scrollbar.Maximum); PumpFor(80);
+            var chooseLocal = Descendants(controls).OfType<Button>().Single(b => b.Text == "采用本机");
+            Assert(chooseLocal.Visible, "conflict choices appear only when resolution is required");
+            int before = remote.Writes; chooseLocal.PerformClick(); PumpFor(50);
+            var prompt = Application.OpenForms.Cast<Form>().Single(f => f.Text == "处理同步冲突");
+            Assert(remote.Writes == before, "choosing a conflict side waits for confirmation before replacing data");
+            Descendants(prompt).OfType<Button>().Single(b => b.Text == "确定").PerformClick();
+            WaitUntil(() => !sync.Busy && !sync.Conflict && remote.Data.Tasks.Single(t => t.Id == task.Id).Name == "本机再次改名", "confirmed local version resolves and pushes conflict");
+            remote.BeforeRead = delegate { throw new SyncException("离线测试"); };
+            store.Change(s => s.Tasks.Single(t => t.Id == added.Id).Important = true);
+            WaitUntil(() => !sync.Busy && sync.Status.Contains("离线测试"), "network failure keeps a visible retryable status");
+            var reopened = new Store(store.PathName); reopened.Load();
+            Assert(reopened.Current.Tasks.Single(t => t.Id == added.Id).Important, "failed upload leaves local edit saved on disk");
+            remote.BeforeRead = null; controls.Push.PerformClick();
+            WaitUntil(() => !sync.Busy && remote.Data.Tasks.Single(t => t.Id == added.Id).Important, "manual Push retries unsent local edits");
+            using (var entered = new System.Threading.ManualResetEvent(false))
+            using (var release = new System.Threading.ManualResetEvent(false))
+            {
+                remote.BeforeRead = delegate { entered.Set(); release.WaitOne(3000); };
+                controls.Pull.PerformClick(); WaitUntil(() => entered.WaitOne(0), "slow sync runs on worker thread");
+                store.Change(s => s.Tasks.Add(new Todo { Name = "传输期间编辑" }));
+                Assert(main.Enabled && settings.Enabled && !controls.Push.Enabled && !controls.Pull.Enabled, "slow sync disables only duplicate sync actions");
+                remote.BeforeRead = null; release.Set();
+                WaitUntil(() => !sync.Busy && remote.Data.Tasks.Any(t => t.Name == "传输期间编辑"), "edits during transfer are retained and pushed after completion");
+            }
+            controls.Repository.Text = "";
+            Descendants(settings).OfType<Button>().Single(b => b.Text == "保存").PerformClick(); PumpFor(750);
+            reads = remote.Reads; store.Change(s => s.Tasks[0].Description = "同步已关闭"); PumpFor(750);
+            Assert(remote.Reads == reads && store.Current.Window.SyncRepository == "", "clearing repository disables subsequent automatic sync");
+            store.Change(s => s.Window.SyncRepository = "https://github.com/example/tasks");
+            WaitUntil(() => !sync.Busy && sync.Status.StartsWith("已同步"), "re-enabling sync reconnects with the persisted baseline");
+            var last = new Todo { Name = "退出前保存" }; store.Change(s => s.Tasks.Add(last)); store.Focus.Start(last.Id, 1); PumpFor(1100);
+            var menu = (ContextMenuStrip)typeof(MainForm).GetField("menu", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main);
+            menu.Items.OfType<ToolStripMenuItem>().Single(i => i.Text == "退出").PerformClick();
+            WaitUntil(() => main.IsDisposed, "explicit app exit waits for final data push without blocking the UI thread");
+            Assert(remote.Data.Tasks.Any(t => t.Id == last.Id) && remote.Data.FocusSessions.Any(f => f.TaskId == last.Id && f.Seconds > 0), "exit sync includes the final task and unsaved focus seconds");
+        }
+    }
     private static void VerifyProductivity(string folder)
     {
         var store = new Store(Path.Combine(folder, "productivity-ui.json")); store.Load();
@@ -1102,27 +1177,53 @@ internal static class UiTests
             panel.Minutes.Text = "1"; panel.Start.PerformClick(); PumpFor(1100);
             var bubble = (FloatingIcon)typeof(MainForm).GetField("bubble", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(main);
             AssertRowCentered(panel.Start.Parent, "running focus actions");
-            Assert(store.Focus.Running && bubble.AccessibleDescription == "1分", "focus starts and cat displays minute countdown");
+            var banner = Descendants(main).OfType<FocusBanner>().Single();
+            WaitUntil(() => store.Focus.Running && bubble.AccessibleDescription == CountdownBadge.Text(store.Focus.RemainingSeconds), "focus starts and cat displays hours minutes and seconds");
+            Assert(banner.Visible && banner.AccessibleDescription.Contains(task.Name) && banner.Height == Ui.U(42), "main shows a compact current-task banner during focus");
+            Assert(CountdownBadge.Text(3661) == "01:01:01" && CountdownBadge.Text(86400) == "24:00:00", "countdown displays full hours including the maximum session length");
+            Capture(bubble, "focus-cat-countdown"); Capture(main, "focus-main-countdown");
+            string longName = "Long focus task with a long title / 长标题不会遮挡右侧的倒计时与圆形进度，也不会撑开主窗口";
+            store.Change(s => Rules.Get(s, task.Id).Name = longName); PumpFor(300);
+            main.Size = main.MinimumSize; PumpFor(100);
+            Assert(banner.AccessibleDescription.Contains(longName) && banner.Right <= banner.Parent.ClientSize.Width, "renamed active task remains available in a narrow main window");
+            Capture(main, "focus-main-narrow");
+            main.Size = new Size(Ui.U(720), Ui.U(500)); store.Change(s => Rules.Get(s, task.Id).Name = task.Name); PumpFor(100);
+            Descendants(main).OfType<Button>().First(b => b.Text.StartsWith("历史")).PerformClick(); PumpFor(100);
+            Assert(banner.Visible && banner.AccessibleDescription.Contains(task.Name), "focus banner remains visible in history");
+            Descendants(main).OfType<Button>().First(b => b.Text.StartsWith("待办")).PerformClick(); PumpFor(100);
+            clock.Close(); typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(banner, new object[] { EventArgs.Empty }); PumpFor(100);
+            clock = TaskWindows.Find<FocusForm>(store, f => f.TaskId == task.Id);
+            Assert(clock != null && clock.Visible, "clicking current task banner restores its focus controls");
+            panel = Descendants(clock).OfType<FocusPanel>().Single();
             int bottom = bubble.Bottom; panel.Start.PerformClick(); PumpFor(300);
-            Assert(store.Focus.Paused && panel.Start.Text == "继续" && bubble.AccessibleDescription == "暂停", "pause control freezes clock and updates cat");
+            Assert(store.Focus.Paused && panel.Start.Text == "继续" && bubble.AccessibleDescription == "已暂停 · " + CountdownBadge.Text(store.Focus.RemainingSeconds) && banner.AccessibleDescription.StartsWith("已暂停"), "pause control freezes clock and updates cat");
+            string pausedText = bubble.AccessibleDescription; PumpFor(1100);
+            Assert(bubble.AccessibleDescription == pausedText, "paused cat countdown retains its reading");
+            Capture(bubble, "focus-cat-paused"); Capture(main, "focus-main-paused");
             panel.Start.PerformClick(); PumpFor(100); panel.Stop.PerformClick(); PumpFor(300);
             Assert(store.Focus.TaskId == null && Productivity.FocusSeconds(store.Current, task) >= 1 && bubble.Bottom == bottom,
                 "ending focus saves elapsed time and removes countdown without moving cat baseline");
+            Assert(!banner.Visible, "ending focus releases main banner space");
             clock.Close();
             using (var catMenu = new ContextMenuStrip())
             using (var cat = new FloatingIcon(delegate { }, delegate(Point point) { savedCatPosition = point; }, catMenu))
             {
-                cat.Location = Screen.PrimaryScreen.WorkingArea.Location + new Size(Ui.U(100), Ui.U(100)); cat.Show(); cat.SetCountdown("1分");
+                cat.Location = Screen.PrimaryScreen.WorkingArea.Location + new Size(Ui.U(100), Ui.U(100)); cat.Show(); cat.SetCountdown(true, 60, 60);
                 Point previous = Cursor.Position;
                 try
                 {
                     Cursor.Position = cat.PointToScreen(new Point(cat.Width / 2, cat.Height / 2));
                     Mouse(cat, "OnMouseDown", MouseButtons.Left, cat.Width / 2, cat.Height / 2);
                     Cursor.Position += new Size(Ui.U(20), Ui.U(20)); Mouse(cat, "OnMouseMove", MouseButtons.Left, 10, 10); Mouse(cat, "OnMouseUp", MouseButtons.Left, 10, 10);
-                    cat.SetCountdown(null);
+                    cat.SetCountdown(false);
                     Assert(cat.Location == savedCatPosition, "dragging timed cat persists artwork position without countdown offset");
-                    cat.Top = Screen.PrimaryScreen.WorkingArea.Top; cat.SetCountdown("1分");
+                    cat.Top = Screen.PrimaryScreen.WorkingArea.Top; cat.SetCountdown(true, 60, 60);
                     Assert(cat.Top >= Screen.PrimaryScreen.WorkingArea.Top, "countdown stays visible when cat starts at top screen edge");
+                    cat.SetCountdown(false);
+                    cat.Location = new Point(Screen.PrimaryScreen.WorkingArea.Right - cat.Width, Screen.PrimaryScreen.WorkingArea.Bottom - cat.Height);
+                    Point corner = cat.Location; cat.SetCountdown(true, 1500, 1500);
+                    Assert(Screen.PrimaryScreen.WorkingArea.Contains(cat.Bounds), "countdown and artwork stay inside the screen at the taskbar corner");
+                    cat.SetCountdown(false); Assert(cat.Location == corner, "ending corner countdown preserves the original artwork position");
                 }
                 finally { Cursor.Position = previous; }
             }
@@ -1514,6 +1615,7 @@ internal static class UiTests
             var c = new Todo { Name = "间接后续 C" }; c.Prerequisites.Add(b.Id);
             var d = new Todo { Name = "共享后续 D" }; d.Prerequisites.Add(a.Id); d.Prerequisites.Add(b.Id);
             store.Change(s => s.Tasks.AddRange(new Todo[] { a, b, c, d }));
+            if (Environment.GetEnvironmentVariable("TINYTODO_SYNC_ONLY") == "1") { VerifySync(temp); return 0; }
             if (Environment.GetEnvironmentVariable("TINYTODO_HEADER_ONLY") == "1") { VerifyTableStartup(); return 0; }
             if (Environment.GetEnvironmentVariable("TINYTODO_PRODUCTIVITY_ONLY") == "1") { VerifyProductivity(temp); return 0; }
             if (Environment.GetEnvironmentVariable("TINYTODO_SELECTION_ONLY") == "1") { VerifyTaskSelection(); return 0; }
@@ -1814,7 +1916,7 @@ internal static class UiTests
                 Assert(opened == null, "drag selection does not open a link");
                 Assert(!editor.Preview.ActivateLink(editor.Preview.Text.IndexOf("unsafe")), "non-web schemes cannot launch from Markdown");
             }
-            VerifyTableStartup(); VerifyProductivity(temp); VerifyHoverPersistence(); VerifyHover(); VerifyStableScrolling(); VerifyRefinement(store); VerifyWindowRecovery(store); VerifyCatSettings(store); VerifyDesktopAdd(store); VerifyCatMenuDismissal(store); VerifyTrayMenu(store); VerifyInputIsolation(store); VerifyCompletionFeedback(temp); VerifyModeless(temp); VerifyPageInteractions(temp); VerifySessionWindowSizes(temp); VerifyPreviewCanvas(temp); VerifyTaskSelection();
+            VerifySync(temp); VerifyTableStartup(); VerifyProductivity(temp); VerifyHoverPersistence(); VerifyHover(); VerifyStableScrolling(); VerifyRefinement(store); VerifyWindowRecovery(store); VerifyCatSettings(store); VerifyDesktopAdd(store); VerifyCatMenuDismissal(store); VerifyTrayMenu(store); VerifyInputIsolation(store); VerifyCompletionFeedback(temp); VerifyModeless(temp); VerifyPageInteractions(temp); VerifySessionWindowSizes(temp); VerifyPreviewCanvas(temp); VerifyTaskSelection();
             using (var toggle = new FloatingSwitch())
             {
                 bool mode = false; toggle.Changed = value => { mode = value; toggle.IsFloating = value; };

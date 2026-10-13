@@ -18,16 +18,19 @@ internal static class Preview
             {
                 string folder = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "../artifacts/productivity/trial"));
                 var locations = new DataLocations(folder); locations.Load();
+                bool copied = false;
                 if (!File.Exists(locations.TaskPath))
                 {
                     var original = DataLocations.Default();
                     if (File.Exists(Path.Combine(original.MetadataDirectory, "data-locations.json")))
                     {
                         original.Load();
-                        if (File.Exists(original.TaskPath)) File.Copy(original.TaskPath, locations.TaskPath);
+                        if (File.Exists(original.TaskPath)) { File.Copy(original.TaskPath, locations.TaskPath); copied = true; }
                     }
                 }
                 var store = new Store(locations.TaskPath); store.Load();
+                if (copied && !String.IsNullOrEmpty(store.Current.Window.SyncRepository))
+                    store.Change(s => { s.Window.SyncRepository = ""; s.Window.SyncTokenVariable = ""; });
                 using (var form = new MainForm(store, locations))
                 {
                     Action label = delegate { if (!form.Text.EndsWith(" · 试用副本")) form.Text += " · 试用副本"; };

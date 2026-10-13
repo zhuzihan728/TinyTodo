@@ -12,17 +12,18 @@ namespace TinyTodo
     {
         private readonly Store store;
         private readonly Action floatingSaved;
+        private readonly SyncSettings syncSettings;
         internal readonly ZoneSelector Mode = new ZoneSelector();
         internal readonly ProgramChecklist Blacklist = new ProgramChecklist { Dock = DockStyle.Fill, EmptyText = "尚未添加程序 · 点击下方选择程序" };
         private readonly System.Collections.Generic.Dictionary<string, ProgramEntry> selected = new System.Collections.Generic.Dictionary<string, ProgramEntry>(StringComparer.OrdinalIgnoreCase);
         private readonly System.Collections.Generic.Dictionary<string, ProgramEntry> leaving = new System.Collections.Generic.Dictionary<string, ProgramEntry>(StringComparer.OrdinalIgnoreCase);
         private ProgramPicker picker;
         internal System.Collections.Generic.IEnumerable<string> BlacklistKeys { get { return selected.Keys; } }
-        internal SettingsForm(Store store, DataLocations locations, Action floatingSaved = null)
+        internal SettingsForm(Store store, DataLocations locations, Action floatingSaved = null, SyncController sync = null)
         {
             this.store = store; this.floatingSaved = floatingSaved;
             Ui.Setup(this, "设置", 620, 580);
-            var root = Ui.Root(Ui.Auto(), Ui.Auto(), new RowStyle(SizeType.Absolute, Ui.U(155)), Ui.Auto(), Ui.Auto(), Ui.Auto(), Ui.Auto());
+            var root = Ui.Root(Ui.Auto(), Ui.Auto(), new RowStyle(SizeType.Absolute, Ui.U(155)), Ui.Auto(), Ui.Auto(), Ui.Auto(), Ui.Auto(), Ui.Auto());
             Mode.Items.AddRange(new object[] { "默认隐藏猫猫", "全屏时隐藏猫猫", "默认开启猫猫" });
             Mode.SelectedItem = Mode.Items[store.Current.Window.CatMode == CatVisibilityMode.Hidden ? 0 : store.Current.Window.CatMode == CatVisibilityMode.Always ? 2 : 1];
             Mode.AccessibleName = "猫猫默认显示规则";
@@ -65,6 +66,7 @@ namespace TinyTodo
                 try { Process.Start(new ProcessStartInfo(Path.GetDirectoryName(store.PathName)) { UseShellExecute = true }); }
                 catch (Exception ex) { ThemedDialog.Notify(this, ex.Message); }
             })); root.Controls.Add(bar, 0, 6);
+            syncSettings = new SyncSettings(store, sync); root.Controls.Add(syncSettings, 0, 7);
             var actions = Ui.Bar(); actions.Padding = new Padding(Ui.U(12), Ui.U(6), Ui.U(12), Ui.U(12)); var save = Ui.Button("保存", delegate { SaveSettings(); });
             var cancel = Ui.Button("取消", delegate { DialogResult = DialogResult.Cancel; Close(); });
             actions.Controls.Add(save); actions.Controls.Add(cancel); CancelButton = cancel;
@@ -89,11 +91,12 @@ namespace TinyTodo
         {
             try
             {
+                syncSettings.ValidateSettings();
                 var names = selected.Keys.ToList();
                 var labels = selected.ToDictionary(pair => pair.Key, pair => pair.Value.Name);
                 int index = Mode.Items.IndexOf(Mode.SelectedItem);
                 CatVisibilityMode mode = index == 0 ? CatVisibilityMode.Hidden : index == 2 ? CatVisibilityMode.Always : CatVisibilityMode.HideFullscreen;
-                store.Change(s => { s.Window.CatMode = mode; s.Window.CatBlacklist = names; s.Window.CatBlacklistNames = labels; });
+                store.Change(s => { s.Window.CatMode = mode; s.Window.CatBlacklist = names; s.Window.CatBlacklistNames = labels; syncSettings.Apply(s.Window); });
                 if (floatingSaved != null) floatingSaved(); DialogResult = DialogResult.OK; Close(); return true;
             }
             catch (Exception ex) { ThemedDialog.Notify(this, ex.Message, "无法保存", MessageBoxButtons.OK, MessageBoxIcon.Warning); return false; }
